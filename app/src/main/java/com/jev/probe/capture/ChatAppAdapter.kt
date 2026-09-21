@@ -4,11 +4,13 @@ import android.content.res.Resources
 import android.graphics.Rect
 import android.util.TypedValue
 import android.view.accessibility.AccessibilityNodeInfo
+import com.jev.probe.core.BubbleBound
 import com.jev.probe.core.ChatGeometry
 import com.jev.probe.core.ChatKind
 import com.jev.probe.core.ChatSnapshot
 import com.jev.probe.core.GroupChat
 import com.jev.probe.core.Msg
+import com.jev.probe.core.WeChatSkip
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -20,7 +22,11 @@ import kotlin.math.roundToInt
  */
 interface ChatAppAdapter {
     val pkg: String
-    fun extract(root: AccessibilityNodeInfo, res: Resources): ChatSnapshot?
+    fun extract(
+        root: AccessibilityNodeInfo,
+        res: Resources,
+        sampler: PixelSampler? = null
+    ): ChatSnapshot?
 }
 
 internal inline fun walkNodes(
@@ -55,24 +61,53 @@ private fun dp(res: Resources, v: Int) = TypedValue.applyDimension(
     TypedValue.COMPLEX_UNIT_DIP, v.toFloat(), res.displayMetrics
 ).roundToInt()
 
-private data class Bubble(val top: Int, val bottom: Int, val cx: Int, val left: Int, val text: String)
+private data class Bubble(
+    val top: Int,
+    val bottom: Int,
+    val cx: Int,
+    val left: Int,
+    val right: Int,
+    val text: String
+)
 private data class Label(val top: Int, val bottom: Int, val cx: Int, val left: Int, val text: String)
+private data class Avatar(val top: Int, val bottom: Int, val cx: Int, val left: Int, val right: Int)
+
+private fun labelAbove(b: Bubble, labels: List<Label>, nameGapPx: Int): Label? =
+    labels.filter { lab ->
+        lab.bottom <= b.top + 6 &&
+            b.top - lab.bottom in 0..nameGapPx &&
+            abs(lab.cx - b.cx) < (b.cx - b.left + 80)
+    }.minByOrNull { b.top - it.bottom }
+
+private fun avatarBeside(b: Bubble, avatars: List<Avatar>, width: Int): Avatar? =
+    avatars.filter { av ->
+        val overlap = minOf(av.bottom, b.bottom) - maxOf(av.top, b.top)
+        val linedUp = overlap >= 8 || abs(av.top - b.top) <= 16
+        if (!linedUp) return@filter false
+        val leftAv = av.cx < width * 0.45
+        if (leftAv) b.left >= av.right - 8 && b.left <= av.right + 96
+        else b.right <= av.left + 8 && b.right >= av.left - 96
+    }.minByOrNull { abs(it.top - b.top) }
 
 private fun attachSpeakers(
     bubbles: List<Bubble>,
     labels: List<Label>,
+    avatars: List<Avatar>,
     mid: Int,
-    nameGapPx: Int
+    width: Int,
+    nameGapPx: Int,
+    sampler: PixelSampler?,
+    useGreen: Boolean
 ): List<Msg> {
     return bubbles.map { b ->
-        val side = if (b.cx > mid) "me" else "other"
-        val speaker = if (side == "other") {
-            labels.filter { lab ->
-                lab.bottom <= b.top + 6 &&
-                    b.top - lab.bottom in 0..nameGapPx &&
-                    abs(lab.cx - b.cx) < (b.cx - b.left + 80)
-            }.minByOrNull { b.top - it.bottom }?.text
-        } else null
+        val name = labelAbove(b, labels, nameGapPx)
+        val byNode = avatarBeside(b, avatars, width)?.let { ChatGeometry.avatarSideFromCx(it.cx, width) }
+        val byShot = if (byNode == null && useGreen) sampler?.weChatAvatarSide(b.top, b.bottom) else null
+        val byAvatar = byNode ?: byShot
+        val byColor = if (useGreen) sampler?.weChatSide(b.left, b.top, b.right, b.bottom) else null
+        val cluster = if (b.cx > mid) "me" else "other"
+        val side = ChatGeometry.decideSide(name != null, byAvatar, byColor, cluster)
+        val speaker = if (side == "other") name?.text else null
         Msg(side, b.text, speaker)
     }
 }
@@ -82,43 +117,79 @@ private fun finishSnapshot(
     bubbles: List<Bubble>,
     labels: List<Label>,
     width: Int,
-    nameGapPx: Int
+    nameGapPx: Int,
+    sampler: PixelSampler? = null,
+    useGreen: Boolean = false,
+    avatars: List<Avatar> = emptyList(),
+    skipReason: String? = null
 ): ChatSnapshot? {
-    if (bubbles.isEmpty()) return null
+    if (bubbles.isEmpty()) {
+        if (skipReason == null) return null
+        return ChatSnapshot(title = title, messages = emptyList(), skipReason = skipReason)
+    }
     val sorted = bubbles.sortedBy { it.top }
     val mid = ChatGeometry.clusterMidX(sorted.map { it.cx }) ?: (width / 2)
-    val msgs = attachSpeakers(sorted, labels, mid, nameGapPx)
+    val msgs = attachSpeakers(sorted, labels, avatars, mid, width, nameGapPx, sampler, useGreen)
     val speakers = msgs.mapNotNull { it.speaker }.filter { it.isNotBlank() }.toSet()
     val kind = if (GroupChat.isGroup(title, speakers)) ChatKind.GROUP else ChatKind.DM
+    val last = sorted.last()
     return ChatSnapshot(
         title = title,
         messages = msgs,
         kind = kind,
-        memberCount = GroupChat.memberCount(title)
+        memberCount = GroupChat.memberCount(title),
+        lastBound = BubbleBound(last.left, last.top, last.right, last.bottom),
+        lastVisibleText = msgs.lastOrNull()?.text,
+        skipReason = skipReason
     )
 }
 
-/** WeChat (com.tencent.mm). Multiple bubble ids + shape heuristic; side from cluster mid. */
+/** WeChat (com.tencent.mm). Side: name-above → other, then avatar, then green, then X. */
 class WeChatAdapter : ChatAppAdapter {
-    override val pkg = "com.tencent.mm"
+    override val pkg = PKG
 
-    override fun extract(root: AccessibilityNodeInfo, res: Resources): ChatSnapshot? {
+    override fun extract(
+        root: AccessibilityNodeInfo,
+        res: Resources,
+        sampler: PixelSampler?
+    ): ChatSnapshot? {
         val width = res.displayMetrics.widthPixels
         val height = res.displayMetrics.heightPixels
         val actionBarMax = (height * 0.14).toInt()
         val bubbles = ArrayList<Bubble>()
         val labels = ArrayList<Label>()
+        val avatars = ArrayList<Avatar>()
         var title: String? = null
         var bestTop = Int.MAX_VALUE
         var firstBubbleTop = Int.MAX_VALUE
+        var officialChrome = false
+        var momentsChrome = false
+        var finderChrome = false
+        var miniProgram = false
+        var composer = false
+        var knownBubble = false
+        val tabs = HashSet<String>()
 
         walkNodes(root) { node ->
             val text = node.text?.toString()
+            val id = node.viewIdResourceName.orEmpty()
+            val desc = node.contentDescription?.toString().orEmpty()
+            if (WeChatSkip.isOfficialChrome(id, text, desc)) officialChrome = true
             val b = Rect()
             node.getBoundsInScreen(b)
-            if (isBubble(node, text, b, width, height, res)) {
+            if (WeChatSkip.looksLikeMoments(id, text, desc, b.top, height)) momentsChrome = true
+            if (WeChatSkip.looksLikeFinder(id, text, desc, b.top, height)) finderChrome = true
+            if (WeChatSkip.looksLikeMiniProgram(id)) miniProgram = true
+            if (WeChatSkip.isChatComposer(node.isEditable, text, b.top, height)) composer = true
+            if (id.isNotEmpty() && BUBBLE_IDS.contains(id)) knownBubble = true
+            if (b.top > height * 0.80) {
+                text?.trim()?.let { if (it in WeChatSkip.TAB_LABELS) tabs.add(it) }
+            }
+            if (isAvatar(node, text, b, width, height, res)) {
+                avatars.add(Avatar(b.top, b.bottom, b.centerX(), b.left, b.right))
+            } else if (isBubble(node, text, b, width, height, res)) {
                 val t = text!!
-                bubbles.add(Bubble(b.top, b.bottom, b.centerX(), b.left, t))
+                bubbles.add(Bubble(b.top, b.bottom, b.centerX(), b.left, b.right, t))
                 if (b.top < firstBubbleTop) firstBubbleTop = b.top
             } else if (isNameLabel(node, text, b, width, height, res)) {
                 labels.add(Label(b.top, b.bottom, b.centerX(), b.left, text!!.trim()))
@@ -134,7 +205,46 @@ class WeChatAdapter : ChatAppAdapter {
                 }
             }
         }
-        return finishSnapshot(title, bubbles, labels, width, dp(res, 36))
+        val structural = WeChatSkip.pageSkip(title, momentsChrome, tabs.size, finderChrome, miniProgram)
+        val skip = WeChatSkip.reason(title, officialChrome) ?: structural
+            ?: if (!knownBubble && !composer) "not_chat" else null
+        if (skip != null) {
+            if (skip == "not_chat" && bubbles.isEmpty() && structural == null && !momentsChrome) {
+                return null
+            }
+            return ChatSnapshot(title = title, messages = emptyList(), skipReason = skip)
+        }
+        return finishSnapshot(
+            title, bubbles, labels, width, dp(res, 36), sampler,
+            useGreen = true, avatars = avatars
+        )
+    }
+
+    private fun isAvatar(
+        node: AccessibilityNodeInfo,
+        text: String?,
+        b: Rect,
+        width: Int,
+        height: Int,
+        res: Resources
+    ): Boolean {
+        if (!text.isNullOrBlank()) return false
+        if (b.top < height * 0.12) return false
+        val min = dp(res, 24)
+        val max = dp(res, 72)
+        if (b.width() !in min..max || b.height() !in min..max) return false
+        val aspect = b.width().toFloat() / b.height().coerceAtLeast(1)
+        if (aspect !in 0.75f..1.35f) return false
+        val inLeft = b.right < width * 0.22
+        val inRight = b.left > width * 0.78
+        if (!inLeft && !inRight) return false
+        val desc = node.contentDescription?.toString().orEmpty()
+        val cls = node.className?.toString().orEmpty()
+        if (cls.contains("Image") || desc.contains("头像") || desc.contains("avatar", ignoreCase = true)) {
+            return true
+        }
+        // 8.0.52+ often hides class names; a gutter square with no text is still the avatar.
+        return cls.isEmpty() || cls == "android.view.View"
     }
 
     private fun isNameLabel(
@@ -182,6 +292,7 @@ class WeChatAdapter : ChatAppAdapter {
     }
 
     companion object {
+        const val PKG = "com.tencent.mm"
         private val BUBBLE_IDS = setOf(
             "com.tencent.mm:id/bkl",
             "com.tencent.mm:id/bth",
@@ -197,7 +308,11 @@ class WeChatAdapter : ChatAppAdapter {
 class FeishuAdapter : ChatAppAdapter {
     override val pkg = "com.ss.android.lark"
 
-    override fun extract(root: AccessibilityNodeInfo, res: Resources): ChatSnapshot? {
+    override fun extract(
+        root: AccessibilityNodeInfo,
+        res: Resources,
+        sampler: PixelSampler?
+    ): ChatSnapshot? {
         val width = res.displayMetrics.widthPixels
         val height = res.displayMetrics.heightPixels
         val topBand = (height * 0.14).toInt()
@@ -222,7 +337,7 @@ class FeishuAdapter : ChatAppAdapter {
             }
             if (!text.isNullOrBlank() && cls == "android.widget.TextView" && !isChrome(id) && !looksLikeTimestamp(text)) {
                 if (b.top in (topBand + 1) until bottomBand) {
-                    bubbles.add(Bubble(b.top, b.bottom, b.centerX(), b.left, text.trim()))
+                    bubbles.add(Bubble(b.top, b.bottom, b.centerX(), b.left, b.right, text.trim()))
                 }
             }
         }

@@ -1,6 +1,6 @@
 package com.jev.probe.core
 
-/** One captured chat bubble. side is "me" (right) or "other" (left). */
+/** One captured chat bubble. WeChat side: name-above=other, then avatar, then green, then X. */
 data class Msg(
     val side: String,
     val text: String,
@@ -9,13 +9,19 @@ data class Msg(
 
 /** A snapshot of the currently-open conversation in whichever chat app is
  *  foreground (see ChatAppAdapter). */
+/** Screen box of one bubble, used to sample color when the user marks "this is me". */
+data class BubbleBound(val left: Int, val top: Int, val right: Int, val bottom: Int)
+
 data class ChatSnapshot(
     val title: String?,
     val messages: List<Msg>,
     val kind: ChatKind = ChatKind.DM,
     val mentionedMe: Boolean = false,
     val memberCount: Int? = null,
-    val group: GroupContext? = null
+    val group: GroupContext? = null,
+    val lastBound: BubbleBound? = null,
+    val lastVisibleText: String? = null,
+    val skipReason: String? = null
 ) {
     val latestFrom: String? get() = messages.lastOrNull()?.side
     val latestSpeaker: String? get() = messages.lastOrNull { it.side == "other" }?.speaker

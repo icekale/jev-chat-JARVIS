@@ -115,6 +115,11 @@ class Prefs(context: Context) {
         get() = sp.getBoolean(K_AT_FILL, true)
         set(v) = sp.edit().putBoolean(K_AT_FILL, v).apply()
 
+    /** User-marked own-bubble fill color (ARGB). 0 = not calibrated. */
+    var myBubbleColor: Int
+        get() = sp.getInt(K_MY_BUBBLE, 0)
+        set(v) = sp.edit().putInt(K_MY_BUBBLE, v).apply()
+
     fun isAllowed(title: String?): Boolean {
         val wl = whitelist
         if (wl.isEmpty()) return true
@@ -143,6 +148,7 @@ class Prefs(context: Context) {
         private const val K_WATCH = "group_watch"
         private const val K_DIGEST = "group_digest"
         private const val K_AT_FILL = "group_at_fill"
+        private const val K_MY_BUBBLE = "my_bubble_color"
 
         const val DEFAULT_REPLY_BASE = "https://openrouter.ai/api/v1"
         // Default stays the OpenRouter DeepSeek id; change the model when you

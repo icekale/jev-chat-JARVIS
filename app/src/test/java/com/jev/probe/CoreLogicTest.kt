@@ -1,6 +1,7 @@
 package com.jev.probe
 
 import com.jev.probe.core.ChatGeometry
+import com.jev.probe.core.ChatHistory
 import com.jev.probe.core.ChatKind
 import com.jev.probe.core.ChatSnapshot
 import com.jev.probe.core.GroupAuto
@@ -8,10 +9,12 @@ import com.jev.probe.core.GroupChat
 import com.jev.probe.core.Msg
 import com.jev.probe.core.OemSettings
 import com.jev.probe.core.Prefs
+import com.jev.probe.core.WeChatSkip
 import com.jev.probe.reply.ReplyParser
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -204,5 +207,216 @@ class ClusterMidTest {
 
     @Test fun single() {
         assertNull(ChatGeometry.clusterMidX(listOf(200)))
+    }
+}
+
+class WeChatGreenTest {
+    private val classic = 0xFF95EC69.toInt()
+    private val night = 0xFF2BA65A.toInt()
+    private val white = 0xFFFFFFFF.toInt()
+    private val lightGray = 0xFFF7F7F7.toInt()
+    private val ink = 0xFF191919.toInt()
+    private val beigeWallpaper = 0xFFEDE0C8.toInt()
+
+    @Test fun classicGreenIsOwn() {
+        assertTrue(ChatGeometry.isWeChatOwnGreen(classic))
+        assertFalse(ChatGeometry.isWeChatOtherBubble(classic))
+    }
+
+    @Test fun nightGreenIsOwn() {
+        assertTrue(ChatGeometry.isWeChatOwnGreen(night))
+        assertFalse(ChatGeometry.isWeChatOtherBubble(night))
+    }
+
+    @Test fun whiteIsOther() {
+        assertTrue(ChatGeometry.isWeChatOtherBubble(white))
+        assertFalse(ChatGeometry.isWeChatOwnGreen(white))
+    }
+
+    @Test fun lightGrayIsOther() {
+        assertTrue(ChatGeometry.isWeChatOtherBubble(lightGray))
+    }
+
+    @Test fun beigeWallpaperIsNotABubble() {
+        assertFalse(ChatGeometry.isWeChatOwnGreen(beigeWallpaper))
+        assertFalse(ChatGeometry.isWeChatOtherBubble(beigeWallpaper))
+    }
+
+    @Test fun oneGreenBeatsWallpaperGray() {
+        val wallpaper = 0xFFEDEDED.toInt()
+        assertEquals("me", ChatGeometry.sideFromWeChatColors(listOf(wallpaper, classic, ink)))
+    }
+
+    @Test fun whiteSamplesAreOther() {
+        assertEquals("other", ChatGeometry.sideFromWeChatColors(listOf(white, white, ink)))
+    }
+
+    @Test fun inkOnlyIsUnknown() {
+        assertNull(ChatGeometry.sideFromWeChatColors(listOf(ink, ink)))
+    }
+}
+
+class DecideSideTest {
+    @Test fun nameAboveIsAlwaysOther() {
+        assertEquals("other", ChatGeometry.decideSide(true, "me", "me", "me"))
+    }
+
+    @Test fun avatarBeatsColor() {
+        assertEquals("me", ChatGeometry.decideSide(false, "me", "other", "other"))
+        assertEquals("other", ChatGeometry.decideSide(false, "other", "me", "me"))
+    }
+
+    @Test fun colorWhenNoAvatar() {
+        assertEquals("me", ChatGeometry.decideSide(false, null, "me", "other"))
+    }
+
+    @Test fun clusterLast() {
+        assertEquals("other", ChatGeometry.decideSide(false, null, null, "other"))
+        assertEquals("me", ChatGeometry.decideSide(false, null, null, "me"))
+    }
+
+    @Test fun avatarFromCx() {
+        assertEquals("me", ChatGeometry.avatarSideFromCx(980, 1080))
+        assertEquals("other", ChatGeometry.avatarSideFromCx(60, 1080))
+        assertNull(ChatGeometry.avatarSideFromCx(540, 1080))
+    }
+
+    @Test fun gutterPhotoVsFlat() {
+        assertEquals("other", ChatGeometry.avatarSideFromGutterVars(900.0, 20.0))
+        assertEquals("me", ChatGeometry.avatarSideFromGutterVars(20.0, 900.0))
+        assertNull(ChatGeometry.avatarSideFromGutterVars(10.0, 10.0))
+        assertNull(ChatGeometry.avatarSideFromGutterVars(800.0, 700.0))
+        assertEquals("other", ChatGeometry.avatarSideFromGutterVars(2000.0, 400.0))
+    }
+
+    @Test fun flatColorsHaveNoVariance() {
+        val gray = List(8) { 0xFFEDEDED.toInt() }
+        assertEquals(0.0, ChatGeometry.luminanceVar(gray), 0.01)
+    }
+
+    @Test fun mixedFaceLikeHasVariance() {
+        val face = listOf(
+            0xFFC48A6A.toInt(), 0xFF8D5A3C.toInt(), 0xFFE8C4A8.toInt(),
+            0xFF3A2A20.toInt(), 0xFFD4A574.toInt(), 0xFF6B3F2A.toInt(),
+            0xFFF0D0B8.toInt(), 0xFF2A1C14.toInt()
+        )
+        assertTrue(ChatGeometry.luminanceVar(face) > 350.0)
+    }
+}
+
+class ChatHistoryTest {
+    private fun m(side: String, text: String, speaker: String? = null) = Msg(side, text, speaker)
+
+    @Test fun firstScreenIsVisible() {
+        val vis = listOf(m("other", "你好"), m("me", "在"))
+        assertEquals(vis, ChatHistory.merge(emptyList(), vis))
+    }
+
+    @Test fun appendNewTail() {
+        val prev = listOf(m("other", "A"), m("other", "B"), m("me", "C"))
+        val vis = listOf(m("other", "B"), m("me", "C"), m("other", "D"))
+        assertEquals(
+            listOf(m("other", "A"), m("other", "B"), m("me", "C"), m("other", "D")),
+            ChatHistory.merge(prev, vis)
+        )
+    }
+
+    @Test fun scrollUpPrepends() {
+        val prev = listOf(m("other", "B"), m("me", "C"), m("other", "D"))
+        val vis = listOf(m("other", "A"), m("other", "B"), m("me", "C"))
+        assertEquals(
+            listOf(m("other", "A"), m("other", "B"), m("me", "C"), m("other", "D")),
+            ChatHistory.merge(prev, vis)
+        )
+    }
+
+    @Test fun sameWindowNoDup() {
+        val prev = listOf(m("other", "A"), m("me", "B"), m("other", "C"))
+        val vis = listOf(m("me", "B"), m("other", "C"))
+        assertEquals(prev, ChatHistory.merge(prev, vis))
+    }
+
+    @Test fun windowInsideHistory() {
+        val prev = listOf(m("other", "A"), m("me", "B"), m("other", "C"), m("me", "D"))
+        val vis = listOf(m("me", "B"), m("other", "C"))
+        assertEquals(prev, ChatHistory.merge(prev, vis))
+    }
+
+    @Test fun capKeepsNewest() {
+        val prev = (1..38).map { m("other", "t$it") }
+        val vis = listOf(m("other", "t37"), m("other", "t38"), m("other", "t39"), m("other", "t40"), m("other", "t41"))
+        val out = ChatHistory.merge(prev, vis, cap = 40)
+        assertEquals(40, out.size)
+        assertEquals("t2", out.first().text)
+        assertEquals("t41", out.last().text)
+    }
+
+    @Test fun switchChatDoesNotMergeHere() {
+        assertEquals("com.tencent.mm|工作群", ChatHistory.chatKey("com.tencent.mm", "工作群"))
+        assertEquals("com.tencent.mm|", ChatHistory.chatKey("com.tencent.mm", "  "))
+        assertNull(ChatHistory.chatKey(null, "x"))
+    }
+
+    @Test fun calibratedPinkIsOwn() {
+        val pink = 0xFFF48FB1.toInt()
+        assertTrue(ChatGeometry.colorClose(pink, 0xFFF178A0.toInt()))
+        assertEquals("me", ChatGeometry.sideFromWeChatColors(listOf(pink, pink), pink))
+        assertEquals("other", ChatGeometry.sideFromWeChatColors(listOf(0xFFFFFFFF.toInt()), pink))
+    }
+}
+
+class WeChatSkipTest {
+    @Test fun fileHelper() {
+        assertTrue(WeChatSkip.isSystemTitle("文件传输助手"))
+        assertTrue(WeChatSkip.isSystemTitle(" File Transfer "))
+        assertEquals("system", WeChatSkip.reason("文件传输助手", false))
+    }
+
+    @Test fun weChatOwnAccounts() {
+        assertTrue(WeChatSkip.isSystemTitle("微信团队"))
+        assertTrue(WeChatSkip.isSystemTitle("微信支付"))
+        assertTrue(WeChatSkip.isSystemTitle("服务通知"))
+        assertTrue(WeChatSkip.isSystemTitle("订阅号消息"))
+        assertFalse(WeChatSkip.isSystemTitle("张三"))
+        assertFalse(WeChatSkip.isSystemTitle("微信客服群"))
+    }
+
+    @Test fun officialChrome() {
+        assertTrue(WeChatSkip.isOfficialChrome("", "公众号", ""))
+        assertTrue(WeChatSkip.isOfficialChrome("", null, "人民日报公众号"))
+        assertTrue(WeChatSkip.isOfficialChrome("com.tencent.mm:id/brand_service_menu", null, ""))
+        assertFalse(WeChatSkip.isOfficialChrome("com.tencent.mm:id/bkl", "你好", ""))
+        assertEquals("official", WeChatSkip.reason("人民日报", true))
+        assertEquals("official", WeChatSkip.reason("某某的公众号", false))
+    }
+
+    @Test fun normalDmNotSkipped() {
+        assertNull(WeChatSkip.reason("周工", false))
+        assertNull(WeChatSkip.reason("项目组(9)", false))
+    }
+
+    @Test fun momentsAndTabsAreNotChat() {
+        assertEquals("not_chat", WeChatSkip.pageSkip("朋友圈", false, 0, false, false))
+        assertEquals("not_chat", WeChatSkip.pageSkip("Moments", false, 0, false, false))
+        assertEquals("not_chat", WeChatSkip.pageSkip("微信", false, 0, false, false))
+        assertEquals("not_chat", WeChatSkip.pageSkip("发现", false, 0, false, false))
+        assertEquals("not_chat", WeChatSkip.pageSkip("周工", true, 0, false, false))
+        assertEquals("not_chat", WeChatSkip.pageSkip("周工", false, 3, false, false))
+        assertEquals("not_chat", WeChatSkip.pageSkip("周工", false, 0, true, false))
+        assertEquals("not_chat", WeChatSkip.pageSkip(null, false, 0, false, true))
+        assertNull(WeChatSkip.pageSkip("周工", false, 1, false, false))
+        assertNull(WeChatSkip.pageSkip("项目组(9)", false, 0, false, false))
+    }
+
+    @Test fun momentsChromeAndComposer() {
+        assertTrue(WeChatSkip.looksLikeMoments("com.tencent.mm:id/sns_timeline", null, "", 400, 2400))
+        assertTrue(WeChatSkip.looksLikeMoments("", "朋友圈", "", 80, 2400))
+        assertFalse(WeChatSkip.looksLikeMoments("", "今天发了朋友圈", "", 800, 2400))
+        assertTrue(WeChatSkip.looksLikeFinder("com.tencent.mm:id/finder_feed", null, "", 400, 2400))
+        assertTrue(WeChatSkip.looksLikeFinder("", "视频号", "", 60, 2400))
+        assertFalse(WeChatSkip.looksLikeFinder("", "视频号", "", 900, 2400))
+        assertTrue(WeChatSkip.isChatComposer(true, null, 2000, 2400))
+        assertFalse(WeChatSkip.isChatComposer(true, null, 400, 2400))
+        assertTrue(WeChatSkip.isChatComposer(false, "按住 说话", 2100, 2400))
     }
 }

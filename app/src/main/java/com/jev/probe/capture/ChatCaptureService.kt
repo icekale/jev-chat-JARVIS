@@ -1,16 +1,22 @@
 package com.jev.probe.capture
 
 import android.accessibilityservice.AccessibilityService
+import android.graphics.Bitmap
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.view.Display
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import com.jev.probe.core.ChatGeometry
+import com.jev.probe.core.ChatHistory
 import com.jev.probe.core.ChatKind
 import com.jev.probe.core.ChatSnapshot
 import com.jev.probe.core.GroupChat
+import com.jev.probe.core.Msg
 import com.jev.probe.core.Prefs
+import com.jev.probe.core.WeChatSkip
 import com.jev.probe.jev.JevClient
 import com.jev.probe.overlay.OverlayController
 import java.util.concurrent.Executors
@@ -43,6 +49,11 @@ open class ChatCaptureService : AccessibilityService() {
     @Volatile private var currentSnapshot: ChatSnapshot? = null
     @Volatile private var generation = 0L
     private var lastWalkAt = 0L
+    @Volatile private var lastShot: Bitmap? = null
+    @Volatile private var lastShotAt = 0L
+    @Volatile private var shotBusy = false
+    private val chatHistory = LinkedHashMap<String, List<Msg>>(16, 0.75f, true)
+    private var lastChatKey: String? = null
 
     private val debounce = Runnable { runAnalysis() }
     private val captureSoon = Runnable { maybeCapture() }
@@ -65,6 +76,7 @@ open class ChatCaptureService : AccessibilityService() {
         overlay?.onManualAnalyze = {
             currentSnapshot?.let { pendingSnapshot = it; runAnalysis() }
         }
+        overlay?.onMarkAsMe = { markLatestAsMe() }
         runCatching { KeepAliveService.start(this) }
         main.removeCallbacks(heartbeat)
         main.post(heartbeat)
@@ -109,6 +121,114 @@ open class ChatCaptureService : AccessibilityService() {
 
     private fun maybeCapture() {
         lastWalkAt = System.currentTimeMillis()
+        val peek = rootInActiveWindow ?: return
+        val pkg = peek.packageName?.toString()
+        recycleQuiet(peek)
+        if (pkg !in adapters) {
+            overlay?.hide()
+            return
+        }
+        if (pkg == WeChatAdapter.PKG) {
+            when (weChatGate()) {
+                Gate.HIDE -> {
+                    overlay?.hide()
+                    lastSignature = ""
+                    return
+                }
+                Gate.IGNORE -> return
+                Gate.CHAT -> Unit
+            }
+            val cache = lastShot
+            if (cache != null && !cache.isRecycled &&
+                System.currentTimeMillis() - lastShotAt < SHOT_TTL_MS
+            ) {
+                finishCapture(shotSampler(cache))
+                return
+            }
+            if (shotBusy) {
+                finishCapture(cache?.takeUnless { it.isRecycled }?.let { shotSampler(it) })
+                return
+            }
+            requestWeChatShot()
+            return
+        }
+        finishCapture(null)
+    }
+
+    private fun requestWeChatShot() {
+        shotBusy = true
+        try {
+            takeScreenshot(
+                Display.DEFAULT_DISPLAY,
+                worker,
+                object : TakeScreenshotCallback {
+                    override fun onSuccess(screenshot: ScreenshotResult) {
+                        val bmp = bitmapFromShot(screenshot)
+                        main.post {
+                            shotBusy = false
+                            if (bmp != null) {
+                                lastShot?.takeUnless { it.isRecycled }?.recycle()
+                                lastShot = bmp
+                                lastShotAt = System.currentTimeMillis()
+                                finishCapture(shotSampler(bmp))
+                            } else {
+                                finishCapture(null)
+                            }
+                        }
+                    }
+
+                    override fun onFailure(errorCode: Int) {
+                        Log.w(TAG, "screenshot failed: $errorCode")
+                        main.post {
+                            shotBusy = false
+                            val cache = lastShot?.takeUnless { it.isRecycled }
+                            finishCapture(cache?.let { shotSampler(it) })
+                        }
+                    }
+                }
+            )
+        } catch (e: Exception) {
+            shotBusy = false
+            Log.w(TAG, "screenshot threw", e)
+            finishCapture(null)
+        }
+    }
+
+    private fun bitmapFromShot(screenshot: ScreenshotResult): Bitmap? {
+        val buf = screenshot.hardwareBuffer
+        return try {
+            val hw = Bitmap.wrapHardwareBuffer(buf, screenshot.colorSpace) ?: return null
+            try {
+                hw.copy(Bitmap.Config.ARGB_8888, false)
+            } finally {
+                hw.recycle()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "screenshot copy failed", e)
+            null
+        } finally {
+            buf.close()
+        }
+    }
+
+    private enum class Gate { CHAT, HIDE, IGNORE }
+
+    /** Walk once before any screenshot. Moments / tabs / inbox never reach the shot. */
+    private fun weChatGate(): Gate {
+        val root = rootInActiveWindow ?: return Gate.IGNORE
+        return try {
+            val raw = adapters[WeChatAdapter.PKG]?.extract(root, resources, null) ?: return Gate.IGNORE
+            when {
+                raw.skipReason != null -> Gate.HIDE
+                raw.messages.isEmpty() -> Gate.IGNORE
+                else -> Gate.CHAT
+            }
+        } finally {
+            recycleQuiet(root)
+        }
+    }
+
+    private fun finishCapture(sampler: PixelSampler?) {
         val p = prefs ?: return
         val root = rootInActiveWindow ?: return
         try {
@@ -118,20 +238,34 @@ open class ChatCaptureService : AccessibilityService() {
                 overlay?.hide()
                 return
             }
-            val raw = adapter.extract(root, resources) ?: return
+            val raw = adapter.extract(root, resources, sampler) ?: return
+            val skip = raw.skipReason ?: if (pkg == WeChatAdapter.PKG) WeChatSkip.reason(raw.title, false) else null
+            if (skip != null) {
+                overlay?.hide()
+                lastSignature = ""
+                return
+            }
             if (raw.messages.isEmpty()) return
             if (!p.isAllowed(raw.title)) { overlay?.hide(); return }
 
-            val speakers = raw.messages.mapNotNull { it.speaker }.filter { it.isNotBlank() }.toSet()
-            val kind = if (raw.kind == ChatKind.GROUP || GroupChat.isGroup(raw.title, speakers))
-                ChatKind.GROUP else ChatKind.DM
-            val ctx = if (kind == ChatKind.GROUP)
-                GroupChat.context(raw.messages, p.myNicknames, p.groupWatch) else null
-            val snapshot = raw.copy(
-                kind = kind,
-                mentionedMe = ctx?.mentionedMe ?: false,
-                memberCount = raw.memberCount ?: GroupChat.memberCount(raw.title),
-                group = ctx
+            val key = ChatHistory.chatKey(pkg, raw.title)
+            if (key != lastChatKey) {
+                lastChatKey = key
+                lastSignature = ""
+            }
+            val prev = key?.let { chatHistory[it] }.orEmpty()
+            val merged = ChatHistory.merge(prev, raw.messages)
+            if (key != null) {
+                chatHistory[key] = merged
+                ChatHistory.evict(chatHistory)
+            }
+            val snapshot = enrichSnapshot(
+                raw.copy(
+                    messages = merged,
+                    lastBound = raw.lastBound,
+                    lastVisibleText = raw.lastVisibleText
+                ),
+                p
             )
 
             if (pkg != activePkg) { activePkg = pkg; lastSignature = "" }
@@ -162,6 +296,49 @@ open class ChatCaptureService : AccessibilityService() {
         } finally {
             recycleQuiet(root)
         }
+    }
+
+    private fun shotSampler(bmp: Bitmap): PixelSampler {
+        val c = prefs?.myBubbleColor ?: 0
+        return PixelSampler(bmp, if (c != 0) c else null)
+    }
+
+    private fun enrichSnapshot(raw: ChatSnapshot, p: Prefs): ChatSnapshot {
+        val speakers = raw.messages.mapNotNull { it.speaker }.filter { it.isNotBlank() }.toSet()
+        val kind = if (raw.kind == ChatKind.GROUP || GroupChat.isGroup(raw.title, speakers))
+            ChatKind.GROUP else ChatKind.DM
+        val ctx = if (kind == ChatKind.GROUP)
+            GroupChat.context(raw.messages, p.myNicknames, p.groupWatch) else null
+        return raw.copy(
+            kind = kind,
+            mentionedMe = ctx?.mentionedMe ?: false,
+            memberCount = raw.memberCount ?: GroupChat.memberCount(raw.title),
+            group = ctx
+        )
+    }
+
+    private fun markLatestAsMe() {
+        val snap = currentSnapshot ?: return
+        val last = snap.messages.lastOrNull() ?: return
+        val flipped = snap.messages.dropLast(1) + last.copy(side = "me", speaker = null)
+        lastChatKey?.let { chatHistory[it] = flipped }
+        val p = prefs ?: return
+        var savedColor = false
+        val bound = snap.lastBound
+        val bmp = lastShot?.takeUnless { it.isRecycled }
+        if (bound != null && bmp != null && last.text == snap.lastVisibleText) {
+            val fill = PixelSampler(bmp).sampleFill(bound.left, bound.top, bound.right, bound.bottom)
+            if (fill != null && !ChatGeometry.isWeChatOtherBubble(fill)) {
+                p.myBubbleColor = fill
+                savedColor = true
+            }
+        }
+        val next = enrichSnapshot(snap.copy(messages = flipped), p)
+        currentSnapshot = next
+        lastSignature = next.signature()
+        overlay?.forgetJudgment()
+        overlay?.showIdle(next)
+        overlay?.toast(if (savedColor) "已记成我的发言，并记住气泡颜色" else "已记成我的发言")
     }
 
     private fun runAnalysis() {
@@ -313,13 +490,17 @@ open class ChatCaptureService : AccessibilityService() {
         main.removeCallbacks(captureSoon)
         main.removeCallbacks(debounce)
         overlay?.onManualAnalyze = null
+        overlay?.onMarkAsMe = null
         overlay?.hide()
         overlay = null
+        lastShot?.takeUnless { it.isRecycled }?.recycle()
+        lastShot = null
         worker.shutdownNow()
     }
 
     companion object {
         private const val TAG = "JEVASSIST"
         private const val THROTTLE_MS = 300L
+        private const val SHOT_TTL_MS = 800L
     }
 }

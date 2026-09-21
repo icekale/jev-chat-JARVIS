@@ -100,6 +100,10 @@ class SettingsActivity : AppCompatActivity() {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE; minLines = 2
         }
         card2.addView(wlEdit)
+        card2.addView(text(
+            "微信会自动跳过：朋友圈、聊天列表、发现/通讯录、视频号、小程序、文件传输助手、公众号和微信支付等官方号。",
+            12f, sub
+        ))
         val autoRow = toggleRow("私聊对方发消息时自动分析", prefs.autoAnalyze)
         card2.addView(autoRow)
         card2.addView(label("群聊自动分析"))
@@ -123,6 +127,14 @@ class SettingsActivity : AppCompatActivity() {
         card2.addView(label("群聊关系描述（给 Jev 判断用）"))
         val groupRelEdit = edit(prefs.groupRelationship, Prefs.DEFAULT_GROUP_REL)
         card2.addView(groupRelEdit)
+        if (prefs.myBubbleColor != 0) {
+            card2.addView(text("已记住自己的气泡颜色（悬浮窗「最新这条是我说的」）。", 12f, sub))
+            card2.addView(secondaryBtn("清除记住的气泡颜色") {
+                prefs.myBubbleColor = 0
+                Toast.makeText(this, "已清除", Toast.LENGTH_SHORT).show()
+                recreate()
+            })
+        }
         root.addView(card2)
 
         // --- 外观 ---

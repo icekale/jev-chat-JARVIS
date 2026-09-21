@@ -89,7 +89,7 @@ object GroupChat {
     }
 
     fun context(messages: List<Msg>, myNames: Set<String>, watchWords: Set<String>): GroupContext {
-        val last10 = messages.takeLast(10)
+        val last10 = messages.takeLast(32)
         val speakers = last10.mapNotNull { it.speaker?.trim() }.filter { it.isNotEmpty() }.distinct()
         val ats = last10.flatMap { atTargets(it.text) }.distinct()
         val latest = latestOther(last10)

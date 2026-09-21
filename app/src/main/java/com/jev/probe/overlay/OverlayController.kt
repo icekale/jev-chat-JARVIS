@@ -50,6 +50,7 @@ class OverlayController(private val ctx: Context) {
     private var lp: WindowManager.LayoutParams? = null
 
     var onManualAnalyze: (() -> Unit)? = null
+    var onMarkAsMe: (() -> Unit)? = null
 
     /** Whether the overlay window is currently on screen. */
     fun isShowing(): Boolean = root != null
@@ -293,10 +294,17 @@ class OverlayController(private val ctx: Context) {
             }
             if (g?.moneyRelated == true) {
                 views.add(hint("涉及红包/转账，已跳过（不碰钱）"))
+                views.addAll(transcriptViews(snapshot, 4))
                 setContent(views)
                 return
             }
+        } else {
+            snapshot.title?.takeIf { it.isNotBlank() }?.let {
+                views.add(line(it, "#6B7280", 12f, true))
+            }
         }
+        views.addAll(transcriptViews(snapshot, 5))
+        views.add(markAsMeRow())
         val label = when {
             snapshot.kind == ChatKind.GROUP && snapshot.mentionedMe -> "有人@你 · 分析"
             snapshot.group?.relevantNow == true -> "与你有关 · 分析"
@@ -348,6 +356,10 @@ class OverlayController(private val ctx: Context) {
 
     fun toast(msg: String) = Toast.makeText(ctx, msg, Toast.LENGTH_SHORT).show()
 
+    fun forgetJudgment() {
+        lastJudgment = null
+    }
+
     fun hide() {
         val r = root ?: return
         runCatching { wm.removeView(r) }
@@ -382,6 +394,7 @@ class OverlayController(private val ctx: Context) {
                 views.add(hint(it))
             }
         }
+        lastSnapshot?.let { views.addAll(transcriptViews(it, 3)) }
 
         // Danger badge — the alarm signal, up top and color-coded.
         a.dangerLevel?.let {
@@ -449,6 +462,7 @@ class OverlayController(private val ctx: Context) {
             if (a.rankedReplies.isEmpty()) views.add(hint("（未生成候选回复）"))
         }
         views.add(reAnalyzeBtn())
+        views.add(markAsMeRow())
 
         setContent(views)
         if (!expanded) toggle()
@@ -524,6 +538,30 @@ class OverlayController(private val ctx: Context) {
         setTextColor(Color.parseColor("#6B7280"))
         setPadding(dp(10), dp(10), dp(10), dp(4))
         setOnClickListener { onManualAnalyze?.invoke() }
+    }
+
+    private fun transcriptViews(snapshot: ChatSnapshot, max: Int): List<View> {
+        val lines = snapshot.messages.takeLast(max)
+        if (lines.isEmpty()) return emptyList()
+        return lines.map { m ->
+            val who = when {
+                m.side == "me" -> "我"
+                else -> m.speaker?.takeIf { it.isNotBlank() } ?: "对方"
+            }
+            val raw = m.text.replace('\n', ' ')
+            val t = if (raw.length > 26) raw.take(25) + "…" else raw
+            val color = if (m.side == "me") "#059669" else "#111827"
+            line("$who：$t", color, 12f)
+        }
+    }
+
+    private fun markAsMeRow(): View = TextView(ctx).apply {
+        text = "最新这条是我说的"
+        textSize = 12f
+        gravity = Gravity.CENTER
+        setTextColor(Color.parseColor("#059669"))
+        setPadding(dp(8), dp(6), dp(8), dp(4))
+        setOnClickListener { onMarkAsMe?.invoke() }
     }
 
     private fun tintBubbleDanger(score: Double) {
