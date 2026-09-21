@@ -32,22 +32,28 @@ interface ChatAppAdapter {
 internal inline fun walkNodes(
     root: AccessibilityNodeInfo,
     max: Int = 4000,
+    stop: () -> Boolean = { false },
     visitor: (AccessibilityNodeInfo) -> Unit
 ) {
     val stack = ArrayDeque<AccessibilityNodeInfo>()
     stack.addLast(root)
     var guard = 0
-    while (stack.isNotEmpty() && guard < max) {
+    while (stack.isNotEmpty() && guard < max && !stop()) {
         guard++
         val node = stack.removeLast()
         try {
             visitor(node)
+            if (stop()) break
             for (i in node.childCount - 1 downTo 0) {
                 node.getChild(i)?.let { stack.addLast(it) }
             }
         } finally {
             if (node !== root) runCatching { node.recycle() }
         }
+    }
+    while (stack.isNotEmpty()) {
+        val extra = stack.removeLast()
+        if (extra !== root) runCatching { extra.recycle() }
     }
 }
 
@@ -89,6 +95,8 @@ private fun avatarBeside(b: Bubble, avatars: List<Avatar>, width: Int): Avatar? 
         else b.right <= av.left + 8 && b.right >= av.left - 96
     }.minByOrNull { abs(it.top - b.top) }
 
+private data class Spoken(val msg: Msg, val recolor: BubbleBound?)
+
 private fun attachSpeakers(
     bubbles: List<Bubble>,
     labels: List<Label>,
@@ -98,7 +106,7 @@ private fun attachSpeakers(
     nameGapPx: Int,
     sampler: PixelSampler?,
     useGreen: Boolean
-): List<Msg> {
+): List<Spoken> {
     return bubbles.map { b ->
         val name = labelAbove(b, labels, nameGapPx)
         val byNode = avatarBeside(b, avatars, width)?.let { ChatGeometry.avatarSideFromCx(it.cx, width) }
@@ -108,7 +116,9 @@ private fun attachSpeakers(
         val cluster = if (b.cx > mid) "me" else "other"
         val side = ChatGeometry.decideSide(name != null, byAvatar, byColor, cluster)
         val speaker = if (side == "other") name?.text else null
-        Msg(side, b.text, speaker)
+        val open = useGreen && sampler == null && name == null && byNode == null
+        val bound = if (open) BubbleBound(b.left, b.top, b.right, b.bottom) else null
+        Spoken(Msg(side, b.text, speaker), bound)
     }
 }
 
@@ -129,7 +139,8 @@ private fun finishSnapshot(
     }
     val sorted = bubbles.sortedBy { it.top }
     val mid = ChatGeometry.clusterMidX(sorted.map { it.cx }) ?: (width / 2)
-    val msgs = attachSpeakers(sorted, labels, avatars, mid, width, nameGapPx, sampler, useGreen)
+    val spoken = attachSpeakers(sorted, labels, avatars, mid, width, nameGapPx, sampler, useGreen)
+    val msgs = spoken.map { it.msg }
     val speakers = msgs.mapNotNull { it.speaker }.filter { it.isNotBlank() }.toSet()
     val kind = if (GroupChat.isGroup(title, speakers)) ChatKind.GROUP else ChatKind.DM
     val last = sorted.last()
@@ -140,7 +151,8 @@ private fun finishSnapshot(
         memberCount = GroupChat.memberCount(title),
         lastBound = BubbleBound(last.left, last.top, last.right, last.bottom),
         lastVisibleText = msgs.lastOrNull()?.text,
-        skipReason = skipReason
+        skipReason = skipReason,
+        recolorBounds = spoken.map { it.recolor }
     )
 }
 
@@ -169,8 +181,9 @@ class WeChatAdapter : ChatAppAdapter {
         var composer = false
         var knownBubble = false
         val tabs = HashSet<String>()
+        var stopWalk = false
 
-        walkNodes(root) { node ->
+        walkNodes(root, stop = { stopWalk }) { node ->
             val text = node.text?.toString()
             val id = node.viewIdResourceName.orEmpty()
             val desc = node.contentDescription?.toString().orEmpty()
@@ -185,6 +198,7 @@ class WeChatAdapter : ChatAppAdapter {
             if (b.top > height * 0.80) {
                 text?.trim()?.let { if (it in WeChatSkip.TAB_LABELS) tabs.add(it) }
             }
+            if (momentsChrome || finderChrome || miniProgram || tabs.size >= 3) stopWalk = true
             if (isAvatar(node, text, b, width, height, res)) {
                 avatars.add(Avatar(b.top, b.bottom, b.centerX(), b.left, b.right))
             } else if (isBubble(node, text, b, width, height, res)) {
@@ -204,6 +218,7 @@ class WeChatAdapter : ChatAppAdapter {
                     }
                 }
             }
+            if (title != null && WeChatSkip.isNonChatTitle(title)) stopWalk = true
         }
         val structural = WeChatSkip.pageSkip(title, momentsChrome, tabs.size, finderChrome, miniProgram)
         val skip = WeChatSkip.reason(title, officialChrome) ?: structural

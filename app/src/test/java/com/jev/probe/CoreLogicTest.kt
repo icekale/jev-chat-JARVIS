@@ -1,5 +1,7 @@
 package com.jev.probe
 
+import com.jev.probe.core.BubbleBound
+import com.jev.probe.core.CapturePace
 import com.jev.probe.core.ChatGeometry
 import com.jev.probe.core.ChatHistory
 import com.jev.probe.core.ChatKind
@@ -362,6 +364,38 @@ class ChatHistoryTest {
         assertTrue(ChatGeometry.colorClose(pink, 0xFFF178A0.toInt()))
         assertEquals("me", ChatGeometry.sideFromWeChatColors(listOf(pink, pink), pink))
         assertEquals("other", ChatGeometry.sideFromWeChatColors(listOf(0xFFFFFFFF.toInt()), pink))
+    }
+}
+
+class CapturePaceTest {
+    private fun m(side: String, text: String, speaker: String? = null) = Msg(side, text, speaker)
+    private val box = BubbleBound(10, 20, 80, 60)
+
+    @Test fun textIgnoresSide() {
+        val a = CapturePace.textOf("周工", listOf(m("other", "在吗")))
+        val b = CapturePace.textOf("周工", listOf(m("me", "在吗")))
+        assertEquals(a, b)
+        assertFalse(a == CapturePace.textOf("周工", listOf(m("other", "在吗"), m("me", "在"))))
+    }
+
+    @Test fun lockedBoundStays() {
+        val msgs = listOf(m("other", "你好", "周工"))
+        val out = CapturePace.recolor(msgs, listOf(null), { "me" }, { "me" })
+        assertEquals("other", out[0].side)
+        assertEquals("周工", out[0].speaker)
+    }
+
+    @Test fun colorFillsOpenBound() {
+        val msgs = listOf(m("other", "你好"))
+        val out = CapturePace.recolor(msgs, listOf(box), { null }, { "me" })
+        assertEquals("me", out[0].side)
+        assertNull(out[0].speaker)
+    }
+
+    @Test fun avatarBeatsColorOnOpenBound() {
+        val msgs = listOf(m("me", "嗯"))
+        val out = CapturePace.recolor(msgs, listOf(box), { "other" }, { "me" })
+        assertEquals("other", out[0].side)
     }
 }
 

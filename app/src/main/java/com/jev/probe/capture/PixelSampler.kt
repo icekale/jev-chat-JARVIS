@@ -3,8 +3,15 @@ package com.jev.probe.capture
 import android.graphics.Bitmap
 import com.jev.probe.core.ChatGeometry
 
-/** Samples a screenshot inside a bubble rect to tell WeChat green (me) from white (other). */
-class PixelSampler(private val bmp: Bitmap, private val calibratedOwn: Int? = null) {
+/**
+ * Samples a screenshot inside a bubble rect.
+ * [scale] is screen-pixels per bitmap-pixel (2 = half-resolution shot).
+ */
+class PixelSampler(
+    private val bmp: Bitmap,
+    private val calibratedOwn: Int? = null,
+    private val scale: Int = 1
+) {
     fun weChatSide(left: Int, top: Int, right: Int, bottom: Int): String? {
         val w = right - left
         val h = bottom - top
@@ -20,8 +27,10 @@ class PixelSampler(private val bmp: Bitmap, private val calibratedOwn: Int? = nu
         )
         val colors = ArrayList<Int>(pts.size)
         for ((x, y) in pts) {
-            if (x in 0 until bmp.width && y in 0 until bmp.height) {
-                colors.add(bmp.getPixel(x, y))
+            val sx = x / scale
+            val sy = y / scale
+            if (sx in 0 until bmp.width && sy in 0 until bmp.height) {
+                colors.add(bmp.getPixel(sx, sy))
             }
         }
         return ChatGeometry.sideFromWeChatColors(colors, calibratedOwn)
@@ -44,8 +53,10 @@ class PixelSampler(private val bmp: Bitmap, private val calibratedOwn: Int? = nu
         var sb = 0
         var n = 0
         for ((x, y) in pts) {
-            if (x !in 0 until bmp.width || y !in 0 until bmp.height) continue
-            val c = bmp.getPixel(x, y)
+            val sx = x / scale
+            val sy = y / scale
+            if (sx !in 0 until bmp.width || sy !in 0 until bmp.height) continue
+            val c = bmp.getPixel(sx, sy)
             if (ChatGeometry.isInk(c)) continue
             sr += ChatGeometry.red(c)
             sg += ChatGeometry.green(c)
@@ -63,13 +74,13 @@ class PixelSampler(private val bmp: Bitmap, private val calibratedOwn: Int? = nu
     fun weChatAvatarSide(bubbleTop: Int, bubbleBottom: Int): String? {
         val w = bmp.width
         val h = bmp.height
-        if (w < 80 || h < 80) return null
-        val strip = (w * 0.12).toInt().coerceIn(36, 88)
-        val y0 = bubbleTop.coerceIn(0, h - 1)
-        val y1 = minOf(bubbleTop + strip, bubbleBottom, h)
-        if (y1 - y0 < 12) return null
-        val leftVar = ChatGeometry.luminanceVar(sampleRect(4, y0, strip, y1))
-        val rightVar = ChatGeometry.luminanceVar(sampleRect(w - strip, y0, w - 4, y1))
+        if (w < 40 || h < 40) return null
+        val strip = (w * 0.12).toInt().coerceIn(18, 88)
+        val y0 = (bubbleTop / scale).coerceIn(0, h - 1)
+        val y1 = minOf((bubbleTop / scale) + strip, bubbleBottom / scale, h)
+        if (y1 - y0 < 8) return null
+        val leftVar = ChatGeometry.luminanceVar(sampleRect(2, y0, strip, y1))
+        val rightVar = ChatGeometry.luminanceVar(sampleRect(w - strip, y0, w - 2, y1))
         return ChatGeometry.avatarSideFromGutterVars(leftVar, rightVar)
     }
 

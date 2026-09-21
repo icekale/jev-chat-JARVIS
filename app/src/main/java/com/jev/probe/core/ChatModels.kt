@@ -21,7 +21,9 @@ data class ChatSnapshot(
     val group: GroupContext? = null,
     val lastBound: BubbleBound? = null,
     val lastVisibleText: String? = null,
-    val skipReason: String? = null
+    val skipReason: String? = null,
+    /** Visible bubbles whose side may still change from a screenshot. Null = locked. */
+    val recolorBounds: List<BubbleBound?> = emptyList()
 ) {
     val latestFrom: String? get() = messages.lastOrNull()?.side
     val latestSpeaker: String? get() = messages.lastOrNull { it.side == "other" }?.speaker
