@@ -7,12 +7,24 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <queries>
+        <package android:name="com.android.settings" />
+        <package android:name="com.oplus.safecenter" />
+        <package android:name="com.coloros.safecenter" />
+        <package android:name="moe.shizuku.privileged.api" />
+        <intent>
+            <action android:name="android.settings.ACCESSIBILITY_SETTINGS" />
+        </intent>
+    </queries>
+
     <application
+        android:name=".JevApp"
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:label="@string/app_name"
-        android:theme="@style/Theme.JevProbe">
+        android:theme="@style/Theme.JevProbe"
+        android:networkSecurityConfig="@xml/network_security_config">
 
         <activity
             android:name=".MainActivity"
@@ -27,9 +39,35 @@
             android:name=".SettingsActivity"
             android:exported="false" />
 
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:enabled="true"
+            android:exported="true"
+            android:multiprocess="false"
+            android:permission="android.permission.INTERNET" />
+
+        <meta-data
+            android:name="moe.shizuku.client.V3_SUPPORT"
+            android:value="true" />
+
+        <service
+            android:name=".capture.JevAccessibilityService"
+            android:exported="true"
+            android:label="@string/a11y_label_plain"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/config_plain" />
+        </service>
+
         <service
             android:name="com.google.android.accessibility.selecttospeak.SelectToSpeakService"
             android:exported="true"
+            android:label="@string/a11y_label_wechat"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
             <intent-filter>
                 <action android:name="android.accessibilityservice.AccessibilityService" />

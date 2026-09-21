@@ -6,12 +6,20 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
-// Release signing: reads a properties file kept OUTSIDE the repo
-// (storeFile / storePassword / keyAlias / keyPassword). Override the path with
-// the JEV_KEYSTORE_PROPS env var. Without it, release builds are unsigned.
+// Optional release keystore kept outside the repo. Override with JEV_KEYSTORE_PROPS.
+// Without it, release is signed with the debug keystore so sideload still works.
 val releaseProps = Properties().apply {
-    val f = file(System.getenv("JEV_KEYSTORE_PROPS") ?: "H:/android/keys/jev-release.properties")
-    if (f.exists()) FileInputStream(f).use { load(it) }
+    val candidates = listOfNotNull(
+        System.getenv("JEV_KEYSTORE_PROPS"),
+        "H:/android/keys/jev-release.properties"
+    )
+    for (raw in candidates) {
+        val f = runCatching { file(raw) }.getOrNull() ?: continue
+        if (f.exists()) {
+            FileInputStream(f).use { load(it) }
+            break
+        }
+    }
 }
 
 android {
@@ -22,8 +30,17 @@ android {
         applicationId = "com.jev.probe"
         minSdk = 30
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 3
+        versionName = "1.1.0"
+    }
+
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("arm64-v8a")
+            isUniversalApk = false
+        }
     }
 
     signingConfigs {
@@ -40,7 +57,9 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
+            isDebuggable = false
             signingConfig = signingConfigs.findByName("release")
+                ?: signingConfigs.getByName("debug")
         }
     }
 
@@ -52,6 +71,15 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+
+    buildFeatures {
+        aidl = true
+        buildConfig = true
+    }
+
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 dependencies {
@@ -59,4 +87,9 @@ dependencies {
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("com.google.android.material:material:1.12.0")
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
+    implementation("dev.rikka.shizuku:api:13.1.5")
+    implementation("dev.rikka.shizuku:provider:13.1.5")
+    implementation("androidx.security:security-crypto:1.0.0")
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
 }

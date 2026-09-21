@@ -4,8 +4,10 @@ import android.util.Log
 import com.jev.probe.core.Analysis
 import com.jev.probe.core.ChatSnapshot
 import com.jev.probe.core.Choice
+import com.jev.probe.core.Prefs
 import com.jev.probe.core.RankedReply
 import com.jev.probe.core.Score
+import com.jev.probe.reply.ReplyParser
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
@@ -15,26 +17,38 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 /**
- * Talks to OpenRouter: one generative call to draft 3 candidate replies, then a
- * single Jev "decisions" call carrying all 7 judgment questions plus the ranking
- * question (speculative fan-out). Uses HttpURLConnection only (no deps).
+ * Talks to Jev (OpenRouter proxy or official TypeSafe `/v1/systemone`) for
+ * typed judgments, then to any OpenAI-compatible Chat Completions endpoint
+ * to draft 3 candidate replies and Jev-rank them.
  *
- * The key is passed in per call; it is never logged.
+ * Keys are passed in per call; they are never logged.
  */
-class JevClient(private val key: String, private val replyModel: String) {
+class JevClient(
+    private val key: String,
+    private val replyModel: String,
+    private val provider: JevProvider = JevProvider.OPENROUTER,
+    private val replyKey: String = "",
+    private val replyBaseUrl: String = Prefs.DEFAULT_REPLY_BASE
+) {
 
-    private val decisionsUrl = "https://openrouter.ai/api/alpha/decisions"
-    private val chatUrl = "https://openrouter.ai/api/v1/chat/completions"
+    private val decisionsUrl = provider.decisionsUrl
+    private val jevModel = provider.jevModel
+    private val chatUrl = Prefs.chatCompletionsUrl(replyBaseUrl)
+    private val openRouterChat = Prefs.isOpenRouterChat(chatUrl)
+
+    private fun chatAuthKey(): String = replyKey.ifBlank {
+        if (openRouterChat && provider == JevProvider.OPENROUTER) key else ""
+    }
 
     /** The 7 judgment questions only (fast, ~1s). No candidate generation. */
     fun judge(snapshot: ChatSnapshot, relationship: String): Analysis {
         val start = System.currentTimeMillis()
         try {
             val body = JSONObject()
-                .put("model", "typesafe/jev-1.13")
+                .put("model", jevModel)
                 .put("state", JevQuestions.buildState(snapshot, relationship))
                 .put("questions", JevQuestions.judge())
-            val answers = postJson(decisionsUrl, body).optJSONObject("answers") ?: JSONObject()
+            val answers = postJson(decisionsUrl, body, key).optJSONObject("answers") ?: JSONObject()
             return Analysis(
                 trueIntent = parseChoice(answers.optJSONObject("true_intent")),
                 dangerLevel = parseScore(answers.optJSONObject("danger_level")),
@@ -55,14 +69,15 @@ class JevClient(private val key: String, private val replyModel: String) {
 
     /** Draft 3 candidate replies (generative model) then Jev-rank them. Slower. */
     fun draftAndRank(snapshot: ChatSnapshot, relationship: String): List<RankedReply> {
+        if (chatAuthKey().isBlank()) return emptyList()
         val candidates = generateCandidates(snapshot, relationship)
         val questions = JSONObject().put("best_reply",
             JevQuestions.rankQuestion(candidates).getJSONObject("best_reply"))
         val body = JSONObject()
-            .put("model", "typesafe/jev-1.13")
+            .put("model", jevModel)
             .put("state", JevQuestions.buildState(snapshot, relationship))
             .put("questions", questions)
-        val answers = postJson(decisionsUrl, body).optJSONObject("answers") ?: JSONObject()
+        val answers = postJson(decisionsUrl, body, key).optJSONObject("answers") ?: JSONObject()
         return parseRanked(answers.optJSONObject("best_reply"), candidates)
     }
 
@@ -90,31 +105,9 @@ class JevClient(private val key: String, private val replyModel: String) {
             .put("model", replyModel)
             .put("messages", messages)
             .put("temperature", 0.8)
-        val resp = postJson(chatUrl, body)
-        val content = resp.optJSONArray("choices")?.optJSONObject(0)
-            ?.optJSONObject("message")?.optString("content") ?: ""
-        return parseThree(content)
-    }
-
-    private fun parseThree(content: String): List<String> {
-        val start = content.indexOf('[')
-        val end = content.lastIndexOf(']')
-        if (start >= 0 && end > start) {
-            try {
-                val arr = JSONArray(content.substring(start, end + 1))
-                val out = ArrayList<String>()
-                for (i in 0 until arr.length()) out.add(arr.getString(i).trim())
-                if (out.size >= 3) return out.take(3)
-                while (out.size < 3) out.add("（稍等，我看下）")
-                return out
-            } catch (_: Exception) { }
-        }
-        // Fallback: split lines.
-        val lines = content.split("\n").map { it.trim().trimStart('-', '*', '1', '2', '3', '.', ' ', '"') }
-            .filter { it.isNotBlank() }
-        val out = lines.take(3).toMutableList()
-        while (out.size < 3) out.add("（稍等，我看下）")
-        return out
+        val resp = postJson(chatUrl, body, chatAuthKey(), extraOpenRouterHeaders = openRouterChat)
+        val content = ReplyParser.extractAssistantText(resp)
+        return ReplyParser.parseThree(content)
     }
 
     private fun parseChoice(o: JSONObject?): Choice? {
@@ -143,7 +136,12 @@ class JevClient(private val key: String, private val replyModel: String) {
     }
 
     /** POST JSON with one retry chain for 429/529 (exponential backoff). */
-    private fun postJson(urlStr: String, body: JSONObject): JSONObject {
+    private fun postJson(
+        urlStr: String,
+        body: JSONObject,
+        authKey: String,
+        extraOpenRouterHeaders: Boolean = false
+    ): JSONObject {
         var attempt = 0
         var lastErr: Exception? = null
         while (attempt < 3) {
@@ -154,10 +152,15 @@ class JevClient(private val key: String, private val replyModel: String) {
                     connectTimeout = 15000
                     readTimeout = 25000
                     doOutput = true
-                    setRequestProperty("Authorization", "Bearer $key")
+                    setRequestProperty("Authorization", "Bearer $authKey")
                     setRequestProperty("Content-Type", "application/json")
-                    setRequestProperty("HTTP-Referer", "https://jev-assistant.local")
-                    setRequestProperty("X-Title", "Jev Assistant")
+                    setRequestProperty("Accept", "application/json")
+                    if (extraOpenRouterHeaders ||
+                        (urlStr.contains("openrouter.ai") && provider == JevProvider.OPENROUTER)
+                    ) {
+                        setRequestProperty("HTTP-Referer", "https://jev-assistant.local")
+                        setRequestProperty("X-Title", "Jev Assistant")
+                    }
                 }
                 val bytes = body.toString().toByteArray(Charsets.UTF_8)
                 conn.outputStream.use { os: OutputStream -> os.write(bytes) }
@@ -186,7 +189,9 @@ class JevClient(private val key: String, private val replyModel: String) {
     private fun readableError(e: Exception): String {
         val m = e.message ?: e.javaClass.simpleName
         return when {
-            m.contains("HTTP 401") -> "密钥无效或未设置（401）"
+            m.contains("HTTP 401") ->
+                if (provider == JevProvider.TYPESAFE) "TypeSafe 密钥无效或未设置（401）"
+                else "OpenRouter 密钥无效或未设置（401）"
             m.contains("HTTP 4") -> "请求被拒：$m"
             m.contains("timed out") || m.contains("timeout") -> "网络超时，请检查连接"
             m.contains("Unable to resolve host") || m.contains("Failed to connect") -> "无法连接网络"

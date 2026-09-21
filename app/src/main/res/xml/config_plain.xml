@@ -8,4 +8,4 @@
     android:packageNames="com.tencent.mm,com.ss.android.lark"
     android:isAccessibilityTool="true"
     android:settingsActivity="com.jev.probe.MainActivity"
-    android:description="@string/a11y_desc_disguised" />
+    android:description="@string/a11y_desc_plain" />

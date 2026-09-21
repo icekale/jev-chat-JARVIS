@@ -1,24 +1,48 @@
 package com.jev.probe.core
 
 import android.content.Context
+import android.content.SharedPreferences
+import android.util.Log
+import androidx.security.crypto.EncryptedSharedPreferences
+import androidx.security.crypto.MasterKeys
+import com.jev.probe.jev.JevProvider
 
 /**
- * App-private config store. Holds the OpenRouter key, model choices, the
- * relationship description used in Jev's state, and the conversation whitelist.
+ * App-private config store. Holds the Jev provider + key, optional reply-draft
+ * key, model choices, the relationship description used in Jev's state, and
+ * the conversation whitelist.
  *
- * Key handling: stored in app-private SharedPreferences (not world-readable,
- * never logged, never in code/git). Hardening to EncryptedSharedPreferences is
- * a follow-up; on the user's own device app-private storage is the MVP bar.
+ * Key handling: EncryptedSharedPreferences (AES256-GCM) with a one-shot
+ * migrate from the old plaintext file. Keys are never logged or in git.
  */
 class Prefs(context: Context) {
 
-    private val sp = context.getSharedPreferences("jev_assistant", Context.MODE_PRIVATE)
+    private val sp: SharedPreferences = openStore(context.applicationContext)
 
+    var jevProvider: JevProvider
+        get() = JevProvider.from(sp.getString(K_PROVIDER, JevProvider.OPENROUTER.id))
+        set(v) = sp.edit().putString(K_PROVIDER, v.id).apply()
+
+    /** Key for the selected Jev endpoint (OpenRouter or TypeSafe). */
     var openRouterKey: String
         get() = sp.getString(K_KEY, "") ?: ""
         set(v) = sp.edit().putString(K_KEY, v.trim()).apply()
 
-    /** Generative model for drafting the 3 candidate replies (OpenRouter chat). */
+    /**
+     * Optional key used only to draft the 3 candidate replies (any OpenAI-compatible
+     * endpoint). Blank means: reuse [openRouterKey] when the chat URL is OpenRouter
+     * and the Jev provider is also OpenRouter; otherwise skip drafting.
+     */
+    var replyKey: String
+        get() = sp.getString(K_REPLY_KEY, "") ?: ""
+        set(v) = sp.edit().putString(K_REPLY_KEY, v.trim()).apply()
+
+    /** OpenAI-compatible Chat Completions base URL (with or without /chat/completions). */
+    var replyBaseUrl: String
+        get() = (sp.getString(K_REPLY_BASE, DEFAULT_REPLY_BASE) ?: DEFAULT_REPLY_BASE).ifBlank { DEFAULT_REPLY_BASE }
+        set(v) = sp.edit().putString(K_REPLY_BASE, v.trim().ifBlank { DEFAULT_REPLY_BASE }).apply()
+
+    /** Generative model id for drafting the 3 candidate replies. */
     var replyModel: String
         get() = sp.getString(K_REPLY_MODEL, DEFAULT_REPLY_MODEL) ?: DEFAULT_REPLY_MODEL
         set(v) = sp.edit().putString(K_REPLY_MODEL, v.trim()).apply()
@@ -71,7 +95,10 @@ class Prefs(context: Context) {
     fun hasKey(): Boolean = openRouterKey.isNotBlank()
 
     companion object {
+        private const val K_PROVIDER = "jev_provider"
         private const val K_KEY = "openrouter_key"
+        private const val K_REPLY_KEY = "reply_key"
+        private const val K_REPLY_BASE = "reply_base_url"
         private const val K_REPLY_MODEL = "reply_model"
         private const val K_REL = "relationship"
         private const val K_ENABLED = "enabled"
@@ -81,9 +108,67 @@ class Prefs(context: Context) {
         private const val K_BUBBLE_X = "bubble_x"
         private const val K_AUTO = "auto_analyze"
 
-        // Reply drafting model on OpenRouter. DeepSeek is region-available in CN,
-        // strong in Chinese, and cheap (Gemini/OpenAI are region-blocked here).
+        const val DEFAULT_REPLY_BASE = "https://openrouter.ai/api/v1"
+        // Default stays the OpenRouter DeepSeek id; change the model when you
+        // point replyBaseUrl at api.openai.com / DeepSeek / a local proxy.
         const val DEFAULT_REPLY_MODEL = "deepseek/deepseek-chat-v3.1"
         const val DEFAULT_REL = "对方是我的伴侣；from=me 的是我发的，from=other 的是对方发的"
+
+        /** Accepts a host, /v1 base, or a full /chat/completions URL. */
+        fun chatCompletionsUrl(raw: String): String {
+            var t = raw.trim().trimEnd('/')
+            if (t.isEmpty()) t = DEFAULT_REPLY_BASE.trimEnd('/')
+            return when {
+                t.endsWith("/chat/completions") -> t
+                t.endsWith("/v1") || t.endsWith("/api/v1") -> "$t/chat/completions"
+                else -> "$t/v1/chat/completions"
+            }
+        }
+
+        fun isOpenRouterChat(raw: String): Boolean =
+            raw.contains("openrouter.ai", ignoreCase = true)
+
+        private const val PLAIN_FILE = "jev_assistant"
+        private const val ENC_FILE = "jev_assistant_enc"
+
+        private fun openStore(ctx: Context): SharedPreferences {
+            val enc = runCatching { encrypted(ctx) }.onFailure {
+                Log.w("JEVASSIST", "encrypted prefs unavailable, using private store")
+            }.getOrNull()
+            val plain = ctx.getSharedPreferences(PLAIN_FILE, Context.MODE_PRIVATE)
+            if (enc != null) {
+                migrate(plain, enc)
+                return enc
+            }
+            return plain
+        }
+
+        private fun encrypted(ctx: Context): SharedPreferences {
+            val master = MasterKeys.getOrCreate(MasterKeys.AES256_GCM_SPEC)
+            return EncryptedSharedPreferences.create(
+                ENC_FILE,
+                master,
+                ctx,
+                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+            )
+        }
+
+        @Suppress("UNCHECKED_CAST")
+        private fun migrate(from: SharedPreferences, to: SharedPreferences) {
+            val all = from.all
+            if (all.isEmpty() || to.all.isNotEmpty()) return
+            val ed = to.edit()
+            for ((k, v) in all) {
+                when (v) {
+                    is String -> ed.putString(k, v)
+                    is Boolean -> ed.putBoolean(k, v)
+                    is Int -> ed.putInt(k, v)
+                    is Set<*> -> ed.putStringSet(k, v as Set<String>)
+                }
+            }
+            ed.commit()
+            from.edit().clear().commit()
+        }
     }
 }

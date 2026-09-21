@@ -62,13 +62,16 @@
 
 ## 下载安装
 
-不想自己编译，直接装仓库里编好的包：[`apk/jev-assistant-v1.0-release.apk`](apk/jev-assistant-v1.0-release.apk)（2026-09-21 构建，release 签名，Android 11+）。
+本仓库是 [Finderchangchang/jev-chat-JARVIS](https://github.com/Finderchangchang/jev-chat-JARVIS) 的公开 fork。当前发布版是 **v1.1.0**（versionCode 3，arm64-v8a，非 debuggable）：
+
+- [Releases · v1.1.0](https://github.com/icekale/jev-chat-JARVIS/releases/tag/v1.1.0)（推荐）
+- 上游附带的旧包仍在 [`apk/jev-assistant-v1.0-release.apk`](apk/jev-assistant-v1.0-release.apk)
 
 ```bash
-adb install -r apk/jev-assistant-v1.0-release.apk
+adb install -r jev-chat-JARVIS-arm64-v8a-release.apk
 ```
 
-之前装过 debug 包的要先卸载再装（签名不同，覆盖会失败），卸载会清掉已填的密钥和设置。小米 / HyperOS 重装后悬浮窗权限会被重置，装完按主页向导再开一次。
+之前装过 debug 包的要先卸载再装（签名不同，覆盖会失败），卸载会清掉已填的密钥和设置。小米 / HyperOS / ColorOS 重装后悬浮窗和无障碍权限会被重置，装完按主页向导再开一次。
 
 ## 构建
 

@@ -17,10 +17,13 @@ import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import com.jev.probe.BuildConfig
 import com.jev.probe.core.ChatSnapshot
 import com.jev.probe.core.Msg
 import com.jev.probe.core.Prefs
 import com.jev.probe.jev.JevClient
+import com.jev.probe.jev.JevProvider
+import java.util.LinkedHashMap
 import java.util.concurrent.Executors
 import kotlin.math.roundToInt
 
@@ -54,9 +57,32 @@ class SettingsActivity : AppCompatActivity() {
         // --- 接口 ---
         root.addView(section("接口"))
         val card1 = card()
-        card1.addView(label("OpenRouter 密钥"))
-        val keyEdit = edit(prefs.openRouterKey, "sk-or-v1-...", password = true)
+        card1.addView(label("Jev 判断接口"))
+        var selectedProvider = prefs.jevProvider
+        val hint = text("", 12f, sub).apply { setPadding(0, dp(6), 0, dp(2)) }
+        val keyLabel = label("判断密钥")
+        val keyEdit = edit(prefs.openRouterKey, keyHint(selectedProvider), password = true)
+        val replyKeyLabel = label("回复生成密钥（可选）")
+        val replyKeyEdit = edit(prefs.replyKey, "sk-... / sk-or-v1-...，自定义接口必填", password = true)
+        fun refreshProviderUi() {
+            hint.text = providerHint(selectedProvider)
+            keyLabel.text = if (selectedProvider == JevProvider.TYPESAFE) "TypeSafe 密钥" else "OpenRouter 密钥"
+            keyEdit.hint = keyHint(selectedProvider)
+        }
+        refreshProviderUi()
+        card1.addView(providerRow(selectedProvider) { next ->
+            selectedProvider = next
+            refreshProviderUi()
+        })
+        card1.addView(hint)
+        card1.addView(keyLabel)
         card1.addView(keyEdit)
+        card1.addView(label("回复接口 Base URL（OpenAI 兼容）"))
+        val replyBaseEdit = edit(prefs.replyBaseUrl, Prefs.DEFAULT_REPLY_BASE)
+        card1.addView(replyBaseEdit)
+        card1.addView(text("填到 /v1 即可，例如 https://api.openai.com/v1 或自建/中转。", 12f, sub))
+        card1.addView(replyKeyLabel)
+        card1.addView(replyKeyEdit)
         card1.addView(label("回复生成模型"))
         val modelEdit = edit(prefs.replyModel, Prefs.DEFAULT_REPLY_MODEL)
         card1.addView(modelEdit)
@@ -99,7 +125,10 @@ class SettingsActivity : AppCompatActivity() {
         // --- Actions ---
         val result = text("", 13f, sub).apply { setPadding(0, dp(12), 0, dp(4)) }
         root.addView(primaryBtn("保存") {
+            prefs.jevProvider = selectedProvider
             prefs.openRouterKey = keyEdit.text.toString()
+            prefs.replyKey = replyKeyEdit.text.toString()
+            prefs.replyBaseUrl = replyBaseEdit.text.toString()
             prefs.replyModel = modelEdit.text.toString().ifBlank { Prefs.DEFAULT_REPLY_MODEL }
             prefs.relationship = relEdit.text.toString().ifBlank { Prefs.DEFAULT_REL }
             prefs.whitelist = wlEdit.text.toString().split("\n").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
@@ -109,22 +138,82 @@ class SettingsActivity : AppCompatActivity() {
         })
         root.addView(secondaryBtn("连通测试") {
             val key = keyEdit.text.toString().trim()
+            val replyKey = replyKeyEdit.text.toString().trim()
+            val replyBase = replyBaseEdit.text.toString().trim()
             val model = modelEdit.text.toString().trim().ifBlank { Prefs.DEFAULT_REPLY_MODEL }
-            if (key.isBlank()) { result.text = "请先填密钥"; return@secondaryBtn }
+            if (key.isBlank()) { result.text = "请先填判断密钥"; return@secondaryBtn }
             result.text = "测试中…"
             worker.execute {
                 val demo = ChatSnapshot("连通测试", listOf(
                     Msg("other", "在吗？"), Msg("me", "在"), Msg("other", "那你说说昨天答应我的事")))
-                val a = JevClient(key, model).analyze(demo, prefs.relationship)
+                val a = JevClient(key, model, selectedProvider, replyKey, replyBase)
+                    .analyze(demo, relEdit.text.toString().ifBlank { Prefs.DEFAULT_REL })
                 main.post {
                     result.text = if (a.error != null) "失败：${a.error}"
-                    else "成功：意图=${a.trueIntent?.choice ?: "?"}，候选=${a.rankedReplies.size} 条，耗时 ${a.latencyMs}ms"
+                    else {
+                        val canReuseOrKey = replyKey.isNotBlank() ||
+                            (Prefs.isOpenRouterChat(replyBase) && selectedProvider == JevProvider.OPENROUTER)
+                        val draftNote = if (a.rankedReplies.isEmpty() && !canReuseOrKey)
+                            "（未填回复密钥，已跳过候选起草）" else ""
+                        "成功（${selectedProvider.displayName}）：意图=${a.trueIntent?.choice ?: "?"}，" +
+                            "候选=${a.rankedReplies.size} 条，耗时 ${a.latencyMs}ms$draftNote"
+                    }
                 }
             }
         })
         root.addView(result)
+        root.addView(text(
+            "版本 ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
+            12f, sub
+        ).apply { setPadding(0, dp(18), 0, 0) })
 
         setContentView(scroll)
+    }
+
+    private fun keyHint(provider: JevProvider) = when (provider) {
+        JevProvider.OPENROUTER -> "sk-or-v1-..."
+        JevProvider.TYPESAFE -> "官网控制台的 TYPESAFE_API_KEY"
+    }
+
+    private fun providerHint(provider: JevProvider) = when (provider) {
+        JevProvider.OPENROUTER ->
+            "判断走 OpenRouter /api/alpha/decisions（typesafe/jev-1.13）。回复默认也走 OpenRouter，可改成任意 OpenAI 兼容接口。"
+        JevProvider.TYPESAFE ->
+            "判断走官网 POST https://api.typesafe.ai/v1/systemone（jev-latest）。Jev 不生成文字；候选回复走下方 OpenAI 兼容接口，需另填回复密钥。"
+    }
+
+    private fun providerRow(initial: JevProvider, onChange: (JevProvider) -> Unit): LinearLayout {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(4), 0, dp(2))
+        }
+        val buttons = LinkedHashMap<JevProvider, TextView>()
+        fun paint() {
+            buttons.forEach { (p, tv) ->
+                val on = p == (row.tag as? JevProvider ?: initial)
+                tv.setTextColor(if (on) Color.WHITE else sub)
+                tv.background = round(dp(10), if (on) accent else Color.parseColor("#E5E7EB"))
+            }
+        }
+        JevProvider.entries.forEach { p ->
+            val tv = TextView(this).apply {
+                text = p.displayName; textSize = 13f; gravity = Gravity.CENTER
+                setTypeface(typeface, Typeface.BOLD)
+                setPadding(dp(14), dp(8), dp(14), dp(8))
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                    .apply { if (p != JevProvider.OPENROUTER) leftMargin = dp(8) }
+                setOnClickListener {
+                    row.tag = p
+                    paint()
+                    onChange(p)
+                }
+            }
+            buttons[p] = tv
+            row.addView(tv)
+        }
+        row.tag = initial
+        paint()
+        return row
     }
 
     private fun toggleRow(labelText: String, initial: Boolean): LinearLayout {

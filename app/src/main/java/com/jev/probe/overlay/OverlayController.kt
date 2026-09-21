@@ -20,7 +20,6 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import com.jev.probe.core.Analysis
-import com.jev.probe.core.ChatSnapshot
 import com.jev.probe.core.Prefs
 import com.jev.probe.core.RankedReply
 import kotlin.math.abs
@@ -54,6 +53,7 @@ class OverlayController(private val ctx: Context) {
 
     private var lastJudgment: Analysis? = null
     private var lastFill: ((String) -> Unit)? = null
+    private var bubbleMenu: View? = null
 
     private fun dp(v: Int) = TypedValue.applyDimension(
         TypedValue.COMPLEX_UNIT_DIP, v.toFloat(), ctx.resources.displayMetrics).roundToInt()
@@ -215,7 +215,13 @@ class OverlayController(private val ctx: Context) {
         }
     }
 
+    private fun dismissMenu() {
+        bubbleMenu?.let { m -> root?.removeView(m) }
+        bubbleMenu = null
+    }
+
     private fun showBubbleMenu() {
+        dismissMenu()
         val menu = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
             background = card(12, panelBg(), stroke = true)
@@ -223,9 +229,10 @@ class OverlayController(private val ctx: Context) {
             setPadding(dp(4), dp(4), dp(4), dp(4))
             layoutParams = FrameLayout.LayoutParams(dp(150), ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(56) }
         }
-        menu.addView(menuItem("打开设置") { openSettings(); root?.removeView(menu) })
+        menu.addView(menuItem("打开设置") { openSettings(); dismissMenu() })
         menu.addView(menuItem("隐藏助手（本次）") { hide() })
-        menu.addView(menuItem("取消") { root?.removeView(menu) })
+        menu.addView(menuItem("取消") { dismissMenu() })
+        bubbleMenu = menu
         root?.addView(menu)
     }
 
@@ -243,24 +250,21 @@ class OverlayController(private val ctx: Context) {
     }
 
     private var collapsedX = dp(6)
-    private var collapsedY = dp(150)
 
     private fun toggle() {
         expanded = !expanded
         val params = lp ?: return
         if (expanded) {
-            // Open the panel from the left, fully on-screen and up high (clear of the
-            // input box), regardless of which edge the bubble was snapped to.
-            collapsedX = params.x; collapsedY = params.y
-            params.x = dp(6)
-            val maxTop = (screenH * 0.14f).roundToInt()
+            collapsedX = params.x
+            val panelW = dp(316)
+            params.x = params.x.coerceIn(dp(6), (screenW - panelW - dp(8)).coerceAtLeast(dp(6)))
+            val maxTop = (screenH * 0.45f).roundToInt()
             if (params.y > maxTop) params.y = maxTop
             panel?.visibility = View.VISIBLE
         } else {
             panel?.visibility = View.GONE
-            params.x = collapsedX; params.y = collapsedY  // bubble returns to where it was
+            params.x = collapsedX  // bubble returns to its edge
         }
-        android.util.Log.d("JEVASSIST", "overlay: toggle expanded=$expanded x=${params.x} y=${params.y} saved=($collapsedX,$collapsedY)")
         root?.let { runCatching { wm.updateViewLayout(it, params) } }
     }
 
@@ -311,7 +315,9 @@ class OverlayController(private val ctx: Context) {
     fun hide() {
         val r = root ?: return
         runCatching { wm.removeView(r) }
-        root = null; bubble = null; panel = null; contentBox = null; dangerDot = null; expanded = false
+        root = null; bubble = null; panel = null; contentBox = null; dangerDot = null
+        bubbleMenu = null; expanded = false
+        lastJudgment = null; lastFill = null
     }
 
     // --------------------------------------------------------------- rendering
@@ -403,7 +409,7 @@ class OverlayController(private val ctx: Context) {
         val btns = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
         btns.addView(pill("复制", false) { copy(text) })
         // Fill, then collapse so the input box + keyboard are visible to review/send.
-        btns.addView(pill("填入", true) { android.util.Log.d("JEVASSIST", "overlay: fill tapped"); onFill(text); if (expanded) toggle() })
+        btns.addView(pill("填入", true) { onFill(text); if (expanded) toggle() })
         c.addView(btns)
         return c
     }

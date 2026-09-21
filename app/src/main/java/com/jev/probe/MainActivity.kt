@@ -1,10 +1,13 @@
 package com.jev.probe
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.util.TypedValue
@@ -14,8 +17,11 @@ import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import com.jev.probe.core.OemSettings
 import com.jev.probe.core.Prefs
+import com.jev.probe.shizuku.ShizukuUnlock
 import kotlin.math.roundToInt
 
 /**
@@ -26,9 +32,9 @@ import kotlin.math.roundToInt
 class MainActivity : AppCompatActivity() {
 
     private lateinit var prefs: Prefs
+    private lateinit var scroll: ScrollView
     private lateinit var container: LinearLayout
-    private val a11yComponent =
-        "com.jev.probe/com.google.android.accessibility.selecttospeak.SelectToSpeakService"
+    private var lastScrollY = 0
 
     private val accent = Color.parseColor("#3A7AFE")
     private val green = Color.parseColor("#16A34A")
@@ -44,28 +50,51 @@ class MainActivity : AppCompatActivity() {
         prefs = Prefs(this)
         window.decorView.setBackgroundColor(Color.parseColor("#F2F3F5"))
 
-        val scroll = ScrollView(this)
+        scroll = ScrollView(this)
         container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(18), dp(22), dp(18), dp(28))
         }
         scroll.addView(container)
         setContentView(scroll)
+        ShizukuUnlock.bindListeners()
+    }
+
+    override fun onDestroy() {
+        ShizukuUnlock.unbindListeners()
+        super.onDestroy()
     }
 
     override fun onResume() {
+        lastScrollY = if (::scroll.isInitialized) scroll.scrollY else 0
         super.onResume()
         build()
+        scroll.post { scroll.scrollTo(0, lastScrollY) }
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == NOTIF_REQ) build()
+    }
+
+    private fun notificationsGranted(): Boolean {
+        if (Build.VERSION.SDK_INT < 33) return true
+        return checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
+            PackageManager.PERMISSION_GRANTED
     }
 
     private fun build() {
         container.removeAllViews()
 
         container.addView(text("Jev 聊天助手", 24f, ink, bold = true))
-        container.addView(text("在聊天 App 旁读对方消息（已支持微信、飞书），给出判断和候选回复。发送始终由你手动点。",
+        container.addView(text("在微信旁读对方消息，给出判断和候选回复。发送始终由你手动点。",
             13f, sub).apply { setPadding(0, dp(6), 0, dp(16)) })
 
-        val a11y = isA11yEnabled()
+        val a11y = OemSettings.isA11yEnabled(this)
         val overlay = Settings.canDrawOverlays(this)
         val key = prefs.hasKey()
         val ready = a11y && overlay && key
@@ -75,21 +104,39 @@ class MainActivity : AppCompatActivity() {
 
         // Permission checklist
         container.addView(sectionLabel("权限设置"))
-        container.addView(permCard("无障碍权限", "读取当前聊天窗口的消息文字", a11y) {
-            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        val a11yHint = when {
+            OemSettings.isColorOs() -> "ColorOS 会拦截直接跳转。先允许受限设置，再开「Jev助手」"
+            OemSettings.isHyperOs() -> "小米需先允许受限设置，再在已下载的服务里打开"
+            else -> "读取当前聊天窗口的消息文字"
+        }
+        container.addView(permCard("无障碍权限", a11yHint, a11y) {
+            if (OemSettings.needsRestrictedUnlock() && !a11y) OemSettings.showA11yGuide(this)
+            else OemSettings.openAccessibility(this)
         })
-        container.addView(permCard("悬浮窗权限", "在聊天窗口上方显示分析卡片", overlay) {
+        container.addView(permCard("允许受限设置", "ColorOS / 小米旁加载必做，否则无障碍开关是灰的或立刻弹回", null) {
+            OemSettings.openAppDetails(this)
+        })
+        container.addView(permCard("Shizuku 解锁无障碍", ShizukuUnlock.statusLine(this), a11y) {
+            ShizukuUnlock.start(this) { msg ->
+                Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+                build()
+            }
+        })
+        container.addView(permCard("通知权限", "保活通知，避免被系统把助手杀掉", notificationsGranted()) {
+            if (Build.VERSION.SDK_INT >= 33) {
+                requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), NOTIF_REQ)
+            }
+        })
+        container.addView(permCard("悬浮窗权限", "在微信上方显示分析卡片", overlay) {
             startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
         })
-        container.addView(permCard("自启动 + 省电无限制", "小米/HyperOS 必做，否则服务被冻结、读不到消息", null) {
-            runCatching {
-                startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
-            }
+        container.addView(permCard("自启动 + 省电无限制", "小米 / ColorOS 必做，否则服务被冻结、读不到消息", null) {
+            OemSettings.openAppDetails(this)
         })
 
         // Actions
         container.addView(sectionLabel("其他"))
-        container.addView(actionRow("设置", "密钥 · 模型 · 关系 · 透明度 · 会话白名单") {
+        container.addView(actionRow("设置", "接口 · 密钥 · 模型 · 关系 · 透明度 · 会话白名单") {
             startActivity(Intent(this, SettingsActivity::class.java))
         })
 
@@ -213,9 +260,7 @@ class MainActivity : AppCompatActivity() {
         if (stroke) setStroke(dp(1), accent)
     }
 
-    private fun isA11yEnabled(): Boolean {
-        val enabled = Settings.Secure.getString(contentResolver,
-            Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: return false
-        return enabled.contains(a11yComponent)
+    companion object {
+        private const val NOTIF_REQ = 4102
     }
 }
