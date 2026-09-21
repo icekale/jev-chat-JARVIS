@@ -8,6 +8,7 @@ from pathlib import Path
 _JSON = Path(__file__).resolve().parents[2] / "app" / "src" / "main" / "assets" / "jev_questions.json"
 _DATA = json.loads(_JSON.read_text(encoding="utf-8"))
 JUDGE_QUESTIONS: dict = _DATA["judge"]
+JUDGE_GROUP_QUESTIONS: dict = _DATA.get("judge_group") or JUDGE_QUESTIONS
 _RANK = _DATA.get("rank") or {}
 
 

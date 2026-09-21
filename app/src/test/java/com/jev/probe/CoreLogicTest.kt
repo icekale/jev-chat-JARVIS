@@ -1,6 +1,11 @@
 package com.jev.probe
 
 import com.jev.probe.core.ChatGeometry
+import com.jev.probe.core.ChatKind
+import com.jev.probe.core.ChatSnapshot
+import com.jev.probe.core.GroupAuto
+import com.jev.probe.core.GroupChat
+import com.jev.probe.core.Msg
 import com.jev.probe.core.OemSettings
 import com.jev.probe.core.Prefs
 import com.jev.probe.reply.ReplyParser
@@ -97,6 +102,93 @@ class MergeComponentTest {
             OemSettings.PLAIN_COMPONENT,
             OemSettings.mergeA11yComponent("  :  ", OemSettings.PLAIN_COMPONENT)
         )
+    }
+}
+
+class GroupChatTest {
+    @Test fun titleCount() {
+        assertEquals(8, GroupChat.memberCount("家人群(8)"))
+        assertEquals(12, GroupChat.memberCount("项目组（12人）"))
+        assertEquals(null, GroupChat.memberCount("小王"))
+        assertEquals("家人群", GroupChat.displayTitle("家人群(8)"))
+    }
+
+    @Test fun detectGroup() {
+        assertTrue(GroupChat.isGroup("家人群(8)", emptySet()))
+        assertTrue(GroupChat.isGroup("周末约饭", listOf("张三", "李四")))
+        assertTrue(!GroupChat.isGroup("小王", emptySet()))
+    }
+
+    @Test fun mentions() {
+        assertTrue(GroupChat.mentionIn("@我 看一下", emptySet()))
+        assertTrue(GroupChat.mentionIn("@所有人开会", emptySet()))
+        assertTrue(GroupChat.mentionIn("@Kale 来一下", setOf("Kale")))
+        assertTrue(!GroupChat.mentionIn("晚上吃什么", setOf("Kale")))
+    }
+
+    @Test fun autoPolicy() {
+        val groupHit = ChatSnapshot(
+            "家人群(8)",
+            listOf(Msg("other", "@我 在吗", "张三")),
+            ChatKind.GROUP,
+            mentionedMe = true,
+            memberCount = 8
+        )
+        val groupMiss = groupHit.copy(
+            messages = listOf(Msg("other", "晚上吃什么", "张三")),
+            mentionedMe = false
+        )
+        assertTrue(GroupChat.shouldAutoAnalyze(groupHit, true, GroupAuto.MENTION))
+        assertTrue(!GroupChat.shouldAutoAnalyze(groupMiss, true, GroupAuto.MENTION))
+        assertTrue(GroupChat.shouldAutoAnalyze(groupMiss, true, GroupAuto.ALL))
+        assertTrue(!GroupChat.shouldAutoAnalyze(groupHit, true, GroupAuto.OFF))
+        val dm = ChatSnapshot("小王", listOf(Msg("other", "在吗")))
+        assertTrue(GroupChat.shouldAutoAnalyze(dm, true, GroupAuto.MENTION))
+    }
+
+    @Test fun contextOpenAsk() {
+        val msgs = listOf(
+            Msg("other", "@Kale 周五能来吗", "李四"),
+            Msg("other", "晚上吃什么", "张三")
+        )
+        val ctx = GroupChat.context(msgs, setOf("Kale"), emptySet())
+        assertTrue(ctx.openAsk?.contains("周五") == true)
+        assertEquals("李四", ctx.openAskSpeaker)
+        assertTrue(ctx.mentionedEarlier)
+        assertTrue(!ctx.mentionedMe)
+    }
+
+    @Test fun contextWatchAndMoney() {
+        val watch = GroupChat.context(
+            listOf(Msg("other", "周报今晚交", "王五")),
+            emptySet(),
+            setOf("周报")
+        )
+        assertEquals(listOf("周报"), watch.watchHits)
+        assertTrue(watch.relevantNow)
+        val money = GroupChat.context(
+            listOf(Msg("other", "[微信红包]", "张三")),
+            emptySet(),
+            emptySet()
+        )
+        assertTrue(money.moneyRelated)
+        assertTrue(!money.relevantNow)
+    }
+
+    @Test fun applyAt() {
+        val snap = ChatSnapshot(
+            "项目组(9)",
+            listOf(Msg("other", "你看一下接口", "周工")),
+            ChatKind.GROUP,
+            group = GroupChat.context(
+                listOf(Msg("other", "你看一下接口", "周工")),
+                emptySet(),
+                emptySet()
+            )
+        )
+        assertEquals("@周工 好的", GroupChat.applyAt("好的", snap, "latest_speaker", "reply_brief"))
+        assertEquals("好的", GroupChat.applyAt("好的", snap, "latest_speaker", "wait"))
+        assertEquals("@周工 已在", GroupChat.applyAt("@周工 已在", snap, "latest_speaker", "reply_brief"))
     }
 }
 

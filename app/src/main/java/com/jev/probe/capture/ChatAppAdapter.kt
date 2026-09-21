@@ -5,8 +5,11 @@ import android.graphics.Rect
 import android.util.TypedValue
 import android.view.accessibility.AccessibilityNodeInfo
 import com.jev.probe.core.ChatGeometry
+import com.jev.probe.core.ChatKind
 import com.jev.probe.core.ChatSnapshot
+import com.jev.probe.core.GroupChat
 import com.jev.probe.core.Msg
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**
@@ -52,6 +55,49 @@ private fun dp(res: Resources, v: Int) = TypedValue.applyDimension(
     TypedValue.COMPLEX_UNIT_DIP, v.toFloat(), res.displayMetrics
 ).roundToInt()
 
+private data class Bubble(val top: Int, val bottom: Int, val cx: Int, val left: Int, val text: String)
+private data class Label(val top: Int, val bottom: Int, val cx: Int, val left: Int, val text: String)
+
+private fun attachSpeakers(
+    bubbles: List<Bubble>,
+    labels: List<Label>,
+    mid: Int,
+    nameGapPx: Int
+): List<Msg> {
+    return bubbles.map { b ->
+        val side = if (b.cx > mid) "me" else "other"
+        val speaker = if (side == "other") {
+            labels.filter { lab ->
+                lab.bottom <= b.top + 6 &&
+                    b.top - lab.bottom in 0..nameGapPx &&
+                    abs(lab.cx - b.cx) < (b.cx - b.left + 80)
+            }.minByOrNull { b.top - it.bottom }?.text
+        } else null
+        Msg(side, b.text, speaker)
+    }
+}
+
+private fun finishSnapshot(
+    title: String?,
+    bubbles: List<Bubble>,
+    labels: List<Label>,
+    width: Int,
+    nameGapPx: Int
+): ChatSnapshot? {
+    if (bubbles.isEmpty()) return null
+    val sorted = bubbles.sortedBy { it.top }
+    val mid = ChatGeometry.clusterMidX(sorted.map { it.cx }) ?: (width / 2)
+    val msgs = attachSpeakers(sorted, labels, mid, nameGapPx)
+    val speakers = msgs.mapNotNull { it.speaker }.filter { it.isNotBlank() }.toSet()
+    val kind = if (GroupChat.isGroup(title, speakers)) ChatKind.GROUP else ChatKind.DM
+    return ChatSnapshot(
+        title = title,
+        messages = msgs,
+        kind = kind,
+        memberCount = GroupChat.memberCount(title)
+    )
+}
+
 /** WeChat (com.tencent.mm). Multiple bubble ids + shape heuristic; side from cluster mid. */
 class WeChatAdapter : ChatAppAdapter {
     override val pkg = "com.tencent.mm"
@@ -61,6 +107,7 @@ class WeChatAdapter : ChatAppAdapter {
         val height = res.displayMetrics.heightPixels
         val actionBarMax = (height * 0.14).toInt()
         val bubbles = ArrayList<Bubble>()
+        val labels = ArrayList<Label>()
         var title: String? = null
         var bestTop = Int.MAX_VALUE
         var firstBubbleTop = Int.MAX_VALUE
@@ -71,8 +118,10 @@ class WeChatAdapter : ChatAppAdapter {
             node.getBoundsInScreen(b)
             if (isBubble(node, text, b, width, height, res)) {
                 val t = text!!
-                bubbles.add(Bubble(b.top, b.centerX(), t))
+                bubbles.add(Bubble(b.top, b.bottom, b.centerX(), b.left, t))
                 if (b.top < firstBubbleTop) firstBubbleTop = b.top
+            } else if (isNameLabel(node, text, b, width, height, res)) {
+                labels.add(Label(b.top, b.bottom, b.centerX(), b.left, text!!.trim()))
             }
             if (!text.isNullOrBlank() && text.length <= 24 && !looksLikeTimestamp(text)) {
                 val barMax = if (firstBubbleTop == Int.MAX_VALUE) actionBarMax
@@ -85,11 +134,26 @@ class WeChatAdapter : ChatAppAdapter {
                 }
             }
         }
-        if (bubbles.isEmpty()) return null
-        bubbles.sortBy { it.top }
-        val mid = ChatGeometry.clusterMidX(bubbles.map { it.cx }) ?: (width / 2)
-        val msgs = bubbles.map { Msg(if (it.cx > mid) "me" else "other", it.text) }
-        return ChatSnapshot(title, msgs)
+        return finishSnapshot(title, bubbles, labels, width, dp(res, 36))
+    }
+
+    private fun isNameLabel(
+        node: AccessibilityNodeInfo,
+        text: String?,
+        b: Rect,
+        width: Int,
+        height: Int,
+        res: Resources
+    ): Boolean {
+        if (text.isNullOrBlank()) return false
+        if (node.isEditable) return false
+        if (looksLikeTimestamp(text)) return false
+        if (text.length !in 1..16) return false
+        if (b.top < height * 0.12) return false
+        if (b.height() > dp(res, 24)) return false
+        if (b.left > width * 0.45) return false
+        val cls = node.className?.toString() ?: ""
+        return cls.contains("TextView") || cls.endsWith("Text")
     }
 
     private fun isBubble(
@@ -108,6 +172,7 @@ class WeChatAdapter : ChatAppAdapter {
         if (b.height() < dp(res, 18) || b.height() > height * 0.45) return false
         val id = node.viewIdResourceName
         if (id != null && BUBBLE_IDS.contains(id)) return true
+        if (text.length <= 16 && b.height() < dp(res, 22)) return false
         val cls = node.className?.toString() ?: ""
         val looksText = cls.contains("TextView") || cls.endsWith("Text")
         if (!looksText || node.childCount != 0) return false
@@ -115,8 +180,6 @@ class WeChatAdapter : ChatAppAdapter {
         val rightGutter = b.left > width * 0.22 && b.right < width * 0.96
         return leftGutter || rightGutter
     }
-
-    private data class Bubble(val top: Int, val cx: Int, val text: String)
 
     companion object {
         private val BUBBLE_IDS = setOf(
@@ -130,7 +193,7 @@ class WeChatAdapter : ChatAppAdapter {
     }
 }
 
-/** Feishu / Lark. Left as upstream wrote it; only the tree walk recycles nodes. */
+/** Feishu / Lark. Left as upstream wrote it; names ride along when present. */
 class FeishuAdapter : ChatAppAdapter {
     override val pkg = "com.ss.android.lark"
 
@@ -142,7 +205,8 @@ class FeishuAdapter : ChatAppAdapter {
 
         var isChat = false
         var title: String? = null
-        val items = ArrayList<Triple<Int, Int, String>>()
+        val bubbles = ArrayList<Bubble>()
+        val labels = ArrayList<Label>()
 
         walkNodes(root, 6000) { node ->
             val id = node.viewIdResourceName ?: ""
@@ -151,21 +215,19 @@ class FeishuAdapter : ChatAppAdapter {
 
             val text = node.text?.toString()
             val cls = node.className?.toString()
+            val b = Rect(); node.getBoundsInScreen(b)
+            if (id.endsWith(":id/name_tv") && !text.isNullOrBlank()) {
+                labels.add(Label(b.top, b.bottom, b.centerX(), b.left, text.trim()))
+                return@walkNodes
+            }
             if (!text.isNullOrBlank() && cls == "android.widget.TextView" && !isChrome(id) && !looksLikeTimestamp(text)) {
-                val b = Rect(); node.getBoundsInScreen(b)
                 if (b.top in (topBand + 1) until bottomBand) {
-                    items.add(Triple(b.top, b.centerX(), text.trim()))
+                    bubbles.add(Bubble(b.top, b.bottom, b.centerX(), b.left, text.trim()))
                 }
             }
         }
-        if (!isChat || items.isEmpty()) return null
-
-        items.sortBy { it.first }
-        val mid = ChatGeometry.clusterMidX(items.map { it.second }) ?: (width / 2)
-        val msgs = items.map { (_, cx, text) ->
-            Msg(if (cx > mid) "me" else "other", text)
-        }
-        return ChatSnapshot(title, msgs)
+        if (!isChat) return null
+        return finishSnapshot(title, bubbles, labels, width, dp(res, 40))
     }
 
     private fun isChrome(id: String): Boolean =

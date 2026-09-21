@@ -77,8 +77,126 @@
       }
     }
   },
+  "judge_group": {
+    "addressed_to_me": {
+      "type": "noul",
+      "instructions": "In this GROUP chat, is the latest message directed at the user (from=me is the user)? True if they were @mentioned, asked a question only they can answer, assigned a task, or called out by name. False if it is general chatter, a joke to the room, or someone else is being addressed. The state field mentioned_me is a hint from the client, not proof.",
+      "criteria": {
+        "true": "The latest line is aimed at the user: an @mention, a named ask, a task for them, or a public call-out.",
+        "false": "The latest line is for the group or for someone else. The user can stay silent."
+      }
+    },
+    "true_intent": {
+      "type": "choice",
+      "instructions": "What is the latest speaker trying to do in this GROUP thread? Judge the latest message in context. Do not treat this as a one-to-one romantic chat.",
+      "criteria": {
+        "ask_you": "They want YOUR answer, decision, or confirmation, not a generic group reaction.",
+        "assign_task": "They are assigning work or asking you (or the room including you) to do something concrete.",
+        "coordinate": "Scheduling or coordinating among several people; you may or may not be needed.",
+        "announce": "Informing the group. No reply is required unless they asked a question.",
+        "joke": "Banter, a meme, or light chat with no task and no call-out.",
+        "call_out": "They are criticizing you or putting you on the spot in front of others.",
+        "off_topic": "Not directed at you and not needing your input."
+      }
+    },
+    "danger_level": {
+      "type": "score",
+      "instructions": "How risky is it for the USER to speak or stay silent in this group right now? Score the present scene. Public blame, a work deadline aimed at them, or a fight already started belongs high. Ordinary logistics and jokes belong low.",
+      "criteria": [
+        "Ordinary group noise or a joke; missing one message costs nothing.",
+        "Light coordination; a late reply is only slightly awkward.",
+        "Someone asked a mild question that could wait.",
+        "A task or time is on the table; silence will be noticed but not punished.",
+        "They @mentioned the user or asked something only the user knows.",
+        "Public pressure: they named the user or implied the user dropped a ball.",
+        "Open group conflict; a sloppy reply will make it worse.",
+        "The user is being blamed in front of others and needs a careful line.",
+        "Work or relationship risk if the user answers wrong or stays silent.",
+        "Active pile-on, HR/boss risk, or they told the user not to speak."
+      ]
+    },
+    "should_reply_now": {
+      "type": "noul",
+      "instructions": "Should the user send a message NOW in this group? True only if they were addressed, their fact or decision is needed, or staying silent would look like they are hiding. False if someone else is handling it, it is chatter, or they do not have the fact yet.",
+      "criteria": {
+        "true": "A short reply from the user is needed now: they were asked, assigned, or publicly called out.",
+        "false": "Do not send: not their turn, they lack the fact, or silence is safer."
+      }
+    },
+    "best_action": {
+      "type": "choice",
+      "instructions": "What type of next group message is best? Ignore timing of notifications. If they were not addressed, prefer wait. If a named fact is missing from the snippet, prefer clarify or wait, do not invent.",
+      "criteria": {
+        "reply_brief": "A short acknowledgment or one-line answer is enough.",
+        "give_fact": "Give a concrete fact, time, or number already present in this snippet.",
+        "volunteer": "Offer to take a clearly named task.",
+        "wait": "Do not speak yet. Someone else is handling it or the user was not asked.",
+        "clarify": "Ask a short clarifying question before committing.",
+        "correct": "Politely correct a factual error about the user or the work.",
+        "deescalate": "Cool down a group conflict without taking a loud side."
+      }
+    },
+    "she_needs": {
+      "type": "choice",
+      "instructions": "What does the GROUP or the latest speaker need from the USER right now? If they were not addressed, choose nothing. If they asked for a named fact or task, choose action. Public blame that wants an apology is apology. Do not choose care unless they are asking the user to take a stance.",
+      "criteria": {
+        "apology": "They want the user to own a named mistake in front of the group.",
+        "action": "They want a concrete action, time, or fact from the user.",
+        "explanation": "They want a short explanation of what happened.",
+        "care": "They want the user to take a visible stance or show they are paying attention.",
+        "nothing": "They need nothing from the user. Chatter, someone else's thread, or a closed notice."
+      }
+    },
+    "tension_resolved": {
+      "type": "noul",
+      "instructions": "In this group, is interpersonal tension already gone? True only if there was never tension, people joked again, or the call-out was clearly accepted. An unanswered @mention, leftover blame, or an open work miss is false.",
+      "criteria": {
+        "true": "No remaining tension: accepted, joked again, or the thread was never tense.",
+        "false": "Tension is still present: waiting, blaming, or the issue is open."
+      }
+    },
+    "group_register": {
+      "type": "choice",
+      "instructions": "What is the social register of this GROUP right now? Use title, relationship, and wording. A family dinner plan is family. A standup or deadline is work. Banter among peers is friends. If mixed, choose mixed.",
+      "criteria": {
+        "work": "Workplace, school project, or formal coordination. Titles, deadlines, owners.",
+        "family": "Family or household. Parents, relatives, home logistics.",
+        "friends": "Friends or a casual club. Jokes, hangouts, no formal owner.",
+        "mixed": "Cannot tell, or work and personal are mixed in the same thread."
+      }
+    },
+    "open_loop": {
+      "type": "noul",
+      "instructions": "Is there still an unanswered ask for the USER in this snippet? The state may include open_ask and mentioned_earlier as hints. True if someone asked the user something and from=me has not answered it yet. False if the user already answered, someone else closed it, or there was no ask.",
+      "criteria": {
+        "true": "An ask or task for the user is still open.",
+        "false": "No open loop for the user, or it was already answered."
+      }
+    },
+    "reply_target": {
+      "type": "choice",
+      "instructions": "If the user sends a message, who should it address? Use latest_speaker when answering the last line. Use earlier_asker when the last line is noise but an earlier ask is still open. Use whole_group only for a short broadcast that must reach everyone. Use nobody if they should not speak.",
+      "criteria": {
+        "latest_speaker": "Address the person who just spoke.",
+        "earlier_asker": "Address the person who asked earlier and is still waiting.",
+        "whole_group": "A short note to the whole group, not one person.",
+        "nobody": "Do not address anyone; they should not send, or a nameless line is enough."
+      }
+    },
+    "thread_status": {
+      "type": "choice",
+      "instructions": "What is the current thread doing? new_topic if the latest line starts something else. continue if it follows the same ask or plan. pile_on if several people are stacking on one person. resolved if the ask was accepted or closed.",
+      "criteria": {
+        "new_topic": "The latest line starts a different subject.",
+        "continue": "Same plan, ask, or task as the recent lines.",
+        "pile_on": "Several people are stacking comments or blame on one person.",
+        "resolved": "The ask or conflict already landed; nothing useful to add."
+      }
+    }
+  },
   "rank": {
     "instructions": "Which candidate reply is the most appropriate next message, given the conversation and the other person's true need? Prefer a reply that matches the best action type. Penalize dismissive, over-promising, or off-topic replies. If the facts are not yet confirmed, prefer the candidate that looks them up instead of faking memory or a vague apology.",
+    "group_instructions": "Which candidate is the most appropriate NEXT message in this GROUP chat? Prefer a reply that matches best_action. Penalize couple-chat tone, long apologies, @everyone, answering when wait was correct, and inventing facts not in the snippet.",
     "keys": [
       "reply_a",
       "reply_b",

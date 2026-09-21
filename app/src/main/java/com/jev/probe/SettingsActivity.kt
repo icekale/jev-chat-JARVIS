@@ -19,6 +19,7 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.jev.probe.BuildConfig
 import com.jev.probe.core.ChatSnapshot
+import com.jev.probe.core.GroupAuto
 import com.jev.probe.core.Msg
 import com.jev.probe.core.Prefs
 import com.jev.probe.jev.JevClient
@@ -99,8 +100,29 @@ class SettingsActivity : AppCompatActivity() {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE; minLines = 2
         }
         card2.addView(wlEdit)
-        val autoRow = toggleRow("对方发消息时自动分析", prefs.autoAnalyze)
+        val autoRow = toggleRow("私聊对方发消息时自动分析", prefs.autoAnalyze)
         card2.addView(autoRow)
+        card2.addView(label("群聊自动分析"))
+        var selectedGroupAuto = prefs.groupAuto
+        card2.addView(groupAutoRow(selectedGroupAuto) { selectedGroupAuto = it })
+        card2.addView(text("「与我相关」= @你 / 叫你办事 / 命中关注词 / 同一个人还在追问未回的事。", 12f, sub))
+        card2.addView(label("我在群里的昵称（每行一个，用来识别 @你）"))
+        val nickEdit = edit(prefs.myNicknames.joinToString("\n"), "例如微信显示名，可多行").apply {
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE; minLines = 2
+        }
+        card2.addView(nickEdit)
+        card2.addView(label("群聊关注词（每行一个，命中也算与我相关）"))
+        val watchEdit = edit(prefs.groupWatch.joinToString("\n"), "例如：你负责、截止日期、周报").apply {
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE; minLines = 2
+        }
+        card2.addView(watchEdit)
+        val digestRow = toggleRow("群里未被点名时也显示摘要", prefs.groupDigest)
+        card2.addView(digestRow)
+        val atFillRow = toggleRow("填入时自动 @ 该回的人", prefs.groupAtOnFill)
+        card2.addView(atFillRow)
+        card2.addView(label("群聊关系描述（给 Jev 判断用）"))
+        val groupRelEdit = edit(prefs.groupRelationship, Prefs.DEFAULT_GROUP_REL)
+        card2.addView(groupRelEdit)
         root.addView(card2)
 
         // --- 外观 ---
@@ -133,6 +155,12 @@ class SettingsActivity : AppCompatActivity() {
             prefs.relationship = relEdit.text.toString().ifBlank { Prefs.DEFAULT_REL }
             prefs.whitelist = wlEdit.text.toString().split("\n").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
             prefs.autoAnalyze = (autoRow.tag as? Boolean) ?: true
+            prefs.groupAuto = selectedGroupAuto
+            prefs.myNicknames = nickEdit.text.toString().split("\n").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+            prefs.groupWatch = watchEdit.text.toString().split("\n").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+            prefs.groupDigest = (digestRow.tag as? Boolean) ?: true
+            prefs.groupAtOnFill = (atFillRow.tag as? Boolean) ?: true
+            prefs.groupRelationship = groupRelEdit.text.toString().ifBlank { Prefs.DEFAULT_GROUP_REL }
             prefs.overlayOpacity = seek.progress + 60
             Toast.makeText(this, "已保存", Toast.LENGTH_SHORT).show()
         })
@@ -202,6 +230,40 @@ class SettingsActivity : AppCompatActivity() {
                 setPadding(dp(14), dp(8), dp(14), dp(8))
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
                     .apply { if (p != JevProvider.OPENROUTER) leftMargin = dp(8) }
+                setOnClickListener {
+                    row.tag = p
+                    paint()
+                    onChange(p)
+                }
+            }
+            buttons[p] = tv
+            row.addView(tv)
+        }
+        row.tag = initial
+        paint()
+        return row
+    }
+
+    private fun groupAutoRow(initial: GroupAuto, onChange: (GroupAuto) -> Unit): LinearLayout {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(4), 0, dp(2))
+        }
+        val buttons = LinkedHashMap<GroupAuto, TextView>()
+        fun paint() {
+            buttons.forEach { (p, tv) ->
+                val on = p == (row.tag as? GroupAuto ?: initial)
+                tv.setTextColor(if (on) Color.WHITE else sub)
+                tv.background = round(dp(10), if (on) accent else Color.parseColor("#E5E7EB"))
+            }
+        }
+        GroupAuto.entries.forEach { p ->
+            val tv = TextView(this).apply {
+                text = p.label; textSize = 13f; gravity = Gravity.CENTER
+                setTypeface(typeface, Typeface.BOLD)
+                setPadding(dp(10), dp(8), dp(10), dp(8))
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                    .apply { if (p != GroupAuto.MENTION) leftMargin = dp(8) }
                 setOnClickListener {
                     row.tag = p
                     paint()

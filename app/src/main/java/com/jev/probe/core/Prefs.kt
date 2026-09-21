@@ -85,6 +85,36 @@ class Prefs(context: Context) {
         get() = sp.getBoolean(K_AUTO, true)
         set(v) = sp.edit().putBoolean(K_AUTO, v).apply()
 
+    /** Group chats: only @me (default), every message, or manual only. */
+    var groupAuto: GroupAuto
+        get() = GroupAuto.from(sp.getString(K_GROUP_AUTO, GroupAuto.MENTION.id))
+        set(v) = sp.edit().putString(K_GROUP_AUTO, v.id).apply()
+
+    /** Nicknames used to detect @you in a group. Empty → only @我 / @所有人. */
+    var myNicknames: Set<String>
+        get() = sp.getStringSet(K_NICKS, emptySet()) ?: emptySet()
+        set(v) = sp.edit().putStringSet(K_NICKS, v).apply()
+
+    /** Relationship text used only for group-chat Jev state. */
+    var groupRelationship: String
+        get() = sp.getString(K_GROUP_REL, DEFAULT_GROUP_REL) ?: DEFAULT_GROUP_REL
+        set(v) = sp.edit().putString(K_GROUP_REL, v).apply()
+
+    /** Extra words that make a group message "about me" (deadline, 你负责…). */
+    var groupWatch: Set<String>
+        get() = sp.getStringSet(K_WATCH, emptySet()) ?: emptySet()
+        set(v) = sp.edit().putStringSet(K_WATCH, v).apply()
+
+    /** Show a local digest on the idle bubble when not auto-analyzing. */
+    var groupDigest: Boolean
+        get() = sp.getBoolean(K_DIGEST, true)
+        set(v) = sp.edit().putBoolean(K_DIGEST, v).apply()
+
+    /** Prefix @name on fill when Jev picked a reply target. */
+    var groupAtOnFill: Boolean
+        get() = sp.getBoolean(K_AT_FILL, true)
+        set(v) = sp.edit().putBoolean(K_AT_FILL, v).apply()
+
     fun isAllowed(title: String?): Boolean {
         val wl = whitelist
         if (wl.isEmpty()) return true
@@ -107,12 +137,20 @@ class Prefs(context: Context) {
         private const val K_BUBBLE_Y = "bubble_y"
         private const val K_BUBBLE_X = "bubble_x"
         private const val K_AUTO = "auto_analyze"
+        private const val K_GROUP_AUTO = "group_auto"
+        private const val K_NICKS = "my_nicknames"
+        private const val K_GROUP_REL = "group_relationship"
+        private const val K_WATCH = "group_watch"
+        private const val K_DIGEST = "group_digest"
+        private const val K_AT_FILL = "group_at_fill"
 
         const val DEFAULT_REPLY_BASE = "https://openrouter.ai/api/v1"
         // Default stays the OpenRouter DeepSeek id; change the model when you
         // point replyBaseUrl at api.openai.com / DeepSeek / a local proxy.
         const val DEFAULT_REPLY_MODEL = "deepseek/deepseek-chat-v3.1"
         const val DEFAULT_REL = "对方是我的伴侣；from=me 的是我发的，from=other 的是对方发的"
+        const val DEFAULT_GROUP_REL =
+            "这是一个多人群聊。from=me 是我，speaker 是群成员昵称。先判断是不是在叫我，再决定回不回。不要用私聊情侣语气。"
 
         /** Accepts a host, /v1 base, or a full /chat/completions URL. */
         fun chatCompletionsUrl(raw: String): String {

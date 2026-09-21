@@ -20,6 +20,9 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import com.jev.probe.core.Analysis
+import com.jev.probe.core.ChatKind
+import com.jev.probe.core.ChatSnapshot
+import com.jev.probe.core.GroupChat
 import com.jev.probe.core.Prefs
 import com.jev.probe.core.RankedReply
 import kotlin.math.abs
@@ -54,6 +57,7 @@ class OverlayController(private val ctx: Context) {
     private var lastJudgment: Analysis? = null
     private var lastFill: ((String) -> Unit)? = null
     private var bubbleMenu: View? = null
+    private var lastSnapshot: ChatSnapshot? = null
 
     private fun dp(v: Int) = TypedValue.applyDimension(
         TypedValue.COMPLEX_UNIT_DIP, v.toFloat(), ctx.resources.displayMetrics).roundToInt()
@@ -270,9 +274,37 @@ class OverlayController(private val ctx: Context) {
 
     // ------------------------------------------------------------ public API
 
-    fun showIdle(title: String?) {
+    fun showIdle(snapshot: ChatSnapshot) {
+        lastSnapshot = snapshot
         ensureRoot(); bubble?.alpha = 0.55f
-        if (lastJudgment == null) setContent(listOf(bigButton("分析当前对话") { onManualAnalyze?.invoke() }))
+        if (snapshot.kind == ChatKind.GROUP) lastJudgment = null
+        else if (lastJudgment != null) return
+        val views = ArrayList<View>()
+        if (snapshot.kind == ChatKind.GROUP) {
+            val title = GroupChat.displayTitle(snapshot.title)
+            val head = buildString {
+                append("群聊 · ").append(title)
+                snapshot.memberCount?.let { append(" · ").append(it).append("人") }
+            }
+            views.add(line(head, "#6B7280", 12f, true))
+            val g = snapshot.group
+            if (prefs.groupDigest && g != null && g.digest.isNotBlank()) {
+                views.add(line(g.digest, "#111827", 13f))
+            }
+            if (g?.moneyRelated == true) {
+                views.add(hint("涉及红包/转账，已跳过（不碰钱）"))
+                setContent(views)
+                return
+            }
+        }
+        val label = when {
+            snapshot.kind == ChatKind.GROUP && snapshot.mentionedMe -> "有人@你 · 分析"
+            snapshot.group?.relevantNow == true -> "与你有关 · 分析"
+            snapshot.kind == ChatKind.GROUP -> "群聊 · 点此分析"
+            else -> "分析当前对话"
+        }
+        views.add(bigButton(label) { onManualAnalyze?.invoke() })
+        setContent(views)
     }
 
     private fun bigButton(label: String, onClick: () -> Unit) = TextView(ctx).apply {
@@ -283,6 +315,10 @@ class OverlayController(private val ctx: Context) {
         layoutParams = LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         setOnClickListener { onClick() }
+    }
+
+    fun bindSnapshot(snapshot: ChatSnapshot) {
+        lastSnapshot = snapshot
     }
 
     fun showLoading() {
@@ -317,7 +353,7 @@ class OverlayController(private val ctx: Context) {
         runCatching { wm.removeView(r) }
         root = null; bubble = null; panel = null; contentBox = null; dangerDot = null
         bubbleMenu = null; expanded = false
-        lastJudgment = null; lastFill = null
+        lastJudgment = null; lastFill = null; lastSnapshot = null
     }
 
     // --------------------------------------------------------------- rendering
@@ -331,6 +367,21 @@ class OverlayController(private val ctx: Context) {
         ensureRoot(); bubble?.alpha = 1f
         panel?.background = card(18, panelBg(), stroke = true) // re-apply in case opacity changed
         val views = ArrayList<View>()
+        val group = lastSnapshot?.kind == ChatKind.GROUP
+
+        if (group) {
+            val title = GroupChat.displayTitle(lastSnapshot?.title)
+            val who = lastSnapshot?.latestSpeaker
+            val bits0 = ArrayList<String>()
+            bits0.add("群聊 · $title")
+            lastSnapshot?.memberCount?.let { bits0.add("${it}人") }
+            if (lastSnapshot?.mentionedMe == true) bits0.add("@你")
+            if (!who.isNullOrBlank()) bits0.add("最新 $who")
+            views.add(line(bits0.joinToString("  ·  "), "#6B7280", 12f, true))
+            lastSnapshot?.group?.digest?.takeIf { it.isNotBlank() }?.let {
+                views.add(hint(it))
+            }
+        }
 
         // Danger badge — the alarm signal, up top and color-coded.
         a.dangerLevel?.let {
@@ -340,14 +391,47 @@ class OverlayController(private val ctx: Context) {
         }
         // Intent headline.
         a.trueIntent?.let {
-            views.add(line("对方真实意图：${INTENT[it.choice] ?: it.choice}", "#111827", 15f, true))
+            val label = if (group) (GROUP_INTENT[it.choice] ?: INTENT[it.choice] ?: it.choice)
+            else (INTENT[it.choice] ?: it.choice)
+            views.add(line(if (group) "群里在做什么：$label" else "对方真实意图：$label", "#111827", 15f, true))
             views.add(hint("把握 ${(it.confidence * 100).roundToInt()}%"))
+        }
+        if (group) {
+            a.groupRegister?.let {
+                views.add(hint("场合：${REGISTER[it.choice] ?: it.choice}"))
+            }
+            a.threadStatus?.let {
+                views.add(hint("线程：${THREAD[it.choice] ?: it.choice}"))
+            }
+            a.addressedToMe?.let {
+                views.add(line(if (it >= 0.5) "这句是在叫你" else "这句不是在叫你", "#374151", 13f))
+            }
+            a.openLoop?.let {
+                if (it >= 0.5) views.add(line("还有没回的问题", "#D97706", 13f, true))
+            }
+            a.replyTarget?.let {
+                val who = when (it.choice) {
+                    "latest_speaker" -> lastSnapshot?.latestSpeaker?.let { n -> "该回 $n" }
+                    "earlier_asker" -> lastSnapshot?.group?.openAskSpeaker?.let { n -> "该回 $n（前面的问）" }
+                    "whole_group" -> "对全群说一句即可"
+                    "nobody" -> "不用点名"
+                    else -> null
+                }
+                if (who != null) views.add(line(who, "#3A7AFE", 13f, true))
+            }
         }
         // Compact secondary line: needs · action · reply-now.
         val bits = ArrayList<String>()
-        a.sheNeeds?.let { bits.add("要${(NEEDS[it.choice] ?: it.choice)}") }
-        a.bestAction?.let { bits.add(ACTION[it.choice] ?: it.choice) }
-        a.shouldReplyNow?.let { bits.add(if (it >= 0.5) "可给实质" else "先别给实质") }
+        val needsMap = if (group) GROUP_NEEDS else NEEDS
+        val actionMap = if (group) GROUP_ACTION else ACTION
+        a.sheNeeds?.let { bits.add("要${(needsMap[it.choice] ?: it.choice)}") }
+        a.bestAction?.let { bits.add(actionMap[it.choice] ?: it.choice) }
+        a.shouldReplyNow?.let {
+            bits.add(
+                if (group) (if (it >= 0.5) "该回" else "先别回")
+                else (if (it >= 0.5) "可给实质" else "先别给实质")
+            )
+        }
         if (bits.isNotEmpty()) views.add(line(bits.joinToString("  ·  "), "#374151", 13f))
         a.tensionResolved?.let { if (it >= 0.7) views.add(line("✓ 紧张已缓解", "#16A34A", 12f)) }
 
@@ -358,7 +442,9 @@ class OverlayController(private val ctx: Context) {
         } else {
             val fill = lastFill ?: {}
             a.rankedReplies.forEachIndexed { i, r ->
-                views.add(replyCard(i + 1, r.text, (r.prob * 100).roundToInt(), fill))
+                views.add(replyCard(i + 1, r.text, (r.prob * 100).roundToInt()) { raw ->
+                    fill(decorateFill(raw))
+                })
             }
             if (a.rankedReplies.isEmpty()) views.add(hint("（未生成候选回复）"))
         }
@@ -426,6 +512,13 @@ class OverlayController(private val ctx: Context) {
         setOnClickListener { onClick() }
     }
 
+    private fun decorateFill(text: String): String {
+        val snap = lastSnapshot ?: return text
+        if (snap.kind != ChatKind.GROUP || !prefs.groupAtOnFill) return text
+        val a = lastJudgment
+        return GroupChat.applyAt(text, snap, a?.replyTarget?.choice, a?.bestAction?.choice)
+    }
+
     private fun reAnalyzeBtn() = TextView(ctx).apply {
         text = "重新分析"; textSize = 13f; gravity = Gravity.CENTER
         setTextColor(Color.parseColor("#6B7280"))
@@ -489,5 +582,21 @@ class OverlayController(private val ctx: Context) {
             "check_history" to "翻聊天记录", "apologize" to "先道歉", "give_commitment" to "给承诺",
             "explain" to "解释清楚", "acknowledge" to "接住情绪", "say_less" to "少说两句",
             "make_plan" to "定个安排")
+        private val GROUP_INTENT = mapOf(
+            "ask_you" to "在问你", "assign_task" to "在派活", "coordinate" to "在协调",
+            "announce" to "在通知", "joke" to "闲聊/玩笑", "call_out" to "当众点你",
+            "off_topic" to "与你无关")
+        private val GROUP_NEEDS = mapOf(
+            "apology" to "你表态道歉", "action" to "你办事", "explanation" to "你解释",
+            "care" to "表态/在场", "nothing" to "不用你回")
+        private val GROUP_ACTION = mapOf(
+            "reply_brief" to "简短回一句", "give_fact" to "给具体信息", "volunteer" to "接下任务",
+            "wait" to "先别回", "clarify" to "先问清楚", "correct" to "礼貌纠正",
+            "deescalate" to "降温")
+        private val REGISTER = mapOf(
+            "work" to "工作", "family" to "家人", "friends" to "朋友", "mixed" to "混合")
+        private val THREAD = mapOf(
+            "new_topic" to "换话题了", "continue" to "还在同一件事",
+            "pile_on" to "几个人叠在一起", "resolved" to "已经收住")
     }
 }

@@ -1,19 +1,29 @@
 package com.jev.probe.core
 
 /** One captured chat bubble. side is "me" (right) or "other" (left). */
-data class Msg(val side: String, val text: String)
+data class Msg(
+    val side: String,
+    val text: String,
+    val speaker: String? = null
+)
 
 /** A snapshot of the currently-open conversation in whichever chat app is
  *  foreground (see ChatAppAdapter). */
 data class ChatSnapshot(
     val title: String?,
-    val messages: List<Msg>
+    val messages: List<Msg>,
+    val kind: ChatKind = ChatKind.DM,
+    val mentionedMe: Boolean = false,
+    val memberCount: Int? = null,
+    val group: GroupContext? = null
 ) {
     val latestFrom: String? get() = messages.lastOrNull()?.side
+    val latestSpeaker: String? get() = messages.lastOrNull { it.side == "other" }?.speaker
 
     /** A stable signature of the last few messages, to detect real changes. */
     fun signature(): String =
-        messages.takeLast(6).joinToString("|") { "${it.side}:${it.text}" }
+        messages.takeLast(6).joinToString("|") { "${it.side}:${it.speaker ?: ""}:${it.text}" } +
+            "|${kind.name}|@=$mentionedMe|${group?.digest ?: ""}"
 }
 
 /** Jev's judgment result for one snapshot, plus the ranked candidate replies. */
@@ -27,7 +37,12 @@ data class Analysis(
     val literalQuestion: Double?,
     val rankedReplies: List<RankedReply>,
     val latencyMs: Long,
-    val error: String? = null
+    val error: String? = null,
+    val addressedToMe: Double? = null,
+    val groupRegister: Choice? = null,
+    val openLoop: Double? = null,
+    val replyTarget: Choice? = null,
+    val threadStatus: Choice? = null
 )
 
 data class Choice(val choice: String, val confidence: Double, val probabilities: Map<String, Double>)

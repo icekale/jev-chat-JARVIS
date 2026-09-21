@@ -7,7 +7,9 @@ import android.os.Looper
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import com.jev.probe.core.ChatKind
 import com.jev.probe.core.ChatSnapshot
+import com.jev.probe.core.GroupChat
 import com.jev.probe.core.Prefs
 import com.jev.probe.jev.JevClient
 import com.jev.probe.overlay.OverlayController
@@ -116,9 +118,21 @@ open class ChatCaptureService : AccessibilityService() {
                 overlay?.hide()
                 return
             }
-            val snapshot = adapter.extract(root, resources) ?: return
-            if (snapshot.messages.isEmpty()) return
-            if (!p.isAllowed(snapshot.title)) { overlay?.hide(); return }
+            val raw = adapter.extract(root, resources) ?: return
+            if (raw.messages.isEmpty()) return
+            if (!p.isAllowed(raw.title)) { overlay?.hide(); return }
+
+            val speakers = raw.messages.mapNotNull { it.speaker }.filter { it.isNotBlank() }.toSet()
+            val kind = if (raw.kind == ChatKind.GROUP || GroupChat.isGroup(raw.title, speakers))
+                ChatKind.GROUP else ChatKind.DM
+            val ctx = if (kind == ChatKind.GROUP)
+                GroupChat.context(raw.messages, p.myNicknames, p.groupWatch) else null
+            val snapshot = raw.copy(
+                kind = kind,
+                mentionedMe = ctx?.mentionedMe ?: false,
+                memberCount = raw.memberCount ?: GroupChat.memberCount(raw.title),
+                group = ctx
+            )
 
             if (pkg != activePkg) { activePkg = pkg; lastSignature = "" }
 
@@ -127,13 +141,18 @@ open class ChatCaptureService : AccessibilityService() {
             val showing = overlay?.isShowing() == true
             if (sig == lastSignature && showing) return
             if (sig == lastSignature && !showing) {
-                overlay?.showIdle(snapshot.title)
+                overlay?.showIdle(snapshot)
                 return
             }
             lastSignature = sig
 
-            if (snapshot.latestFrom != "other" || !p.autoAnalyze) {
-                overlay?.showIdle(snapshot.title)
+            if (snapshot.group?.moneyRelated == true) {
+                overlay?.showIdle(snapshot)
+                return
+            }
+
+            if (!GroupChat.shouldAutoAnalyze(snapshot, p.autoAnalyze, p.groupAuto)) {
+                overlay?.showIdle(snapshot)
                 return
             }
 
@@ -148,15 +167,20 @@ open class ChatCaptureService : AccessibilityService() {
     private fun runAnalysis() {
         val snapshot = pendingSnapshot ?: return
         val p = prefs ?: return
+        if (snapshot.group?.moneyRelated == true) {
+            overlay?.showIdle(snapshot)
+            return
+        }
         if (!p.hasKey()) { overlay?.showError("未设置接口密钥，去设置里填"); return }
         val gen = ++generation
         val sig = snapshot.signature()
+        overlay?.bindSnapshot(snapshot)
         overlay?.showLoading()
         val client = JevClient(
             p.openRouterKey, p.replyModel, p.jevProvider,
             p.replyKey, p.replyBaseUrl
         )
-        val rel = p.relationship
+        val rel = if (snapshot.kind == ChatKind.GROUP) p.groupRelationship else p.relationship
         submit {
             val judgment = client.judge(snapshot, rel)
             main.post {
