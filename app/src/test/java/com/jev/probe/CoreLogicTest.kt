@@ -9,6 +9,7 @@ import com.jev.probe.core.ChatHistory
 import com.jev.probe.core.ChatKind
 import com.jev.probe.core.ChatMood
 import com.jev.probe.core.ChatRel
+import com.jev.probe.core.ReplyVoice
 import com.jev.probe.core.ChatSnapshot
 import com.jev.probe.core.Choice
 import com.jev.probe.core.DraftSteer
@@ -529,6 +530,24 @@ class AffectSteerTest {
         assertEquals(ChatRel.MAX, map.size)
         assertFalse(map.containsKey("k1"))
         assertEquals("v40", ChatRel.decode(ChatRel.encode(map))["k40"])
+        assertEquals("同事", ChatRel.labelOf(ChatRel.PRESETS.first { it.label == "同事" }.text))
+        assertNull(ChatRel.labelOf("随便写的"))
+    }
+}
+
+class ReplyVoiceTest {
+    @Test fun copiesOnlyMyRecentLines() {
+        val mine = ReplyVoice.mine(listOf(
+            Msg("other", "在吗"),
+            Msg("me", "刚到"),
+            Msg("me", "你说"),
+            Msg("other", "好"),
+            Msg("me", "行")
+        ))
+        assertEquals(listOf("刚到", "你说", "行"), mine)
+        assertTrue(ReplyVoice.system(false).contains("不是客服"))
+        assertTrue(ReplyVoice.voiceBlock(emptyList()).contains("还没说过话"))
+        assertTrue(ReplyVoice.voiceBlock(listOf("嗯")).contains("嗯"))
     }
 }
 

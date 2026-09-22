@@ -223,8 +223,8 @@
     }
   },
   "rank": {
-    "instructions": "Which candidate reply is the most appropriate next message, given the conversation and the other person's true need? Prefer a reply that matches the best action type. If judged_affect is hurt, angry, cold, or resigned, penalize jokes and lectures. If judged_affect is affectionate or teasing, penalize a stiff or cold reply. Penalize dismissive, over-promising, or off-topic replies. If the facts are not yet confirmed, prefer the candidate that looks them up instead of faking memory or a vague apology.",
-    "group_instructions": "Which candidate is the most appropriate NEXT message in this GROUP chat? Prefer a reply that matches best_action. If judged_affect is hurt, angry, cold, or resigned, penalize jokes. Penalize couple-chat tone, long apologies, @everyone, answering when wait was correct, and inventing facts not in the snippet.",
+    "instructions": "Which candidate reply is the most appropriate next message, given the conversation and the other person's true need? Prefer a reply that matches the best action type and sounds like the person who wrote from=me: short, spoken, unfinished is fine. Penalize assistant or counselor tone (我理解, 当然可以, 我会注意, 希望你能理解, essays). If judged_affect is hurt, angry, cold, or resigned, penalize jokes and lectures. If judged_affect is affectionate or teasing, penalize a stiff or cold reply. Penalize dismissive, over-promising, or off-topic replies. If the facts are not yet confirmed, prefer the candidate that looks them up instead of faking memory or a vague apology.",
+    "group_instructions": "Which candidate is the most appropriate NEXT message in this GROUP chat? Prefer a reply that matches best_action and sounds typed in WeChat, not a memo. Penalize assistant tone, couple-chat tone, long apologies, @everyone, answering when wait was correct, and inventing facts not in the snippet. If judged_affect is hurt, angry, cold, or resigned, penalize jokes.",
     "keys": [
       "reply_a",
       "reply_b",

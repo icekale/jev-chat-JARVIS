@@ -92,10 +92,10 @@ class SettingsActivity : AppCompatActivity() {
         // --- 分析 ---
         root.addView(section("分析"))
         val card2 = card()
-        card2.addView(label("关系描述（给 Jev 判断用）"))
+        card2.addView(label("没单独设过的聊天，用这句"))
         val relEdit = edit(prefs.relationship, Prefs.DEFAULT_REL)
         card2.addView(relEdit)
-        card2.addView(text("悬浮窗里点「这段关系」可以只改当前聊天，不改这里的默认。群聊同理。", 12f, sub))
+        card2.addView(text("每个聊天在悬浮窗点「关系」，选伴侣、朋友、同事、家人或客户。这里只是还没选过时的兜底。", 12f, sub))
         card2.addView(label("会话白名单（每行一个关键词，空=所有会话）"))
         val wlEdit = edit(prefs.whitelist.joinToString("\n"), "留空则对所有会话生效").apply {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE; minLines = 2

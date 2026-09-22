@@ -24,6 +24,7 @@ import android.widget.Toast
 import com.jev.probe.core.Affect
 import com.jev.probe.core.Analysis
 import com.jev.probe.core.ChatKind
+import com.jev.probe.core.ChatRel
 import com.jev.probe.core.ChatSnapshot
 import com.jev.probe.core.GroupChat
 import com.jev.probe.core.JudgeWords
@@ -589,11 +590,13 @@ class OverlayController(private val ctx: Context) {
 
     private fun relationshipLine(): View {
         val key = chatKey
-        val group = lastSnapshot?.kind == ChatKind.GROUP
-        val custom = key != null && prefs.chatRelationship(key) != null
-        val shown = prefs.relationshipFor(key, group).replace('\n', ' ')
-        val preview = if (shown.length > 26) shown.take(25) + "…" else shown
-        val label = if (custom) "这段关系：$preview" else "这段关系：默认 · $preview"
+        val stored = key?.let { prefs.chatRelationship(it) }
+        val name = ChatRel.labelOf(stored)
+        val label = when {
+            name != null -> "关系：$name"
+            stored != null -> "关系：自定义"
+            else -> "关系：点此选择"
+        }
         return TextView(ctx).apply {
             text = label
             textSize = 12f
@@ -679,45 +682,65 @@ class OverlayController(private val ctx: Context) {
         }
         editingRel = true
         if (!expanded) toggle()
-        val group = lastSnapshot?.kind == ChatKind.GROUP
+        val current = prefs.chatRelationship(key)
+        val picked = ChatRel.labelOf(current)
+        fun choose(text: String, toastText: String) {
+            prefs.setChatRelationship(key, text)
+            finishRelEdit()
+            toast(toastText)
+        }
+        val row1 = chipRow(ChatRel.PRESETS.take(3), picked) { preset ->
+            choose(preset.text, "这段按${preset.label}")
+        }
+        val row2 = chipRow(ChatRel.PRESETS.drop(3), picked) { preset ->
+            choose(preset.text, "这段按${preset.label}")
+        }
         val edit = EditText(ctx).apply {
-            setText(prefs.relationshipFor(key, group))
-            setSelection(text.length)
-            hint = "只对这个聊天。留空恢复默认"
+            setText(if (picked == null) current.orEmpty() else "")
+            hint = "或者写一句，只对这个聊天"
             setHintTextColor(Color.parseColor("#9CA3AF"))
             setTextColor(Color.parseColor("#111827"))
             textSize = 13f
-            maxLines = 4
+            maxLines = 3
             background = card(10, Color.parseColor("#F3F4F6"))
             setPadding(dp(8), dp(8), dp(8), dp(8))
+            setOnFocusChangeListener { _, has -> if (has) setOverlayFocusable(true) }
         }
         val row = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(0, dp(8), 0, 0)
         }
-        row.addView(pill("记住", true) {
-            prefs.setChatRelationship(key, edit.text?.toString().orEmpty())
+        row.addView(pill("记住这句", true) {
             hideIme(edit)
-            val blank = edit.text.isNullOrBlank()
-            finishRelEdit()
-            toast(if (blank) "已恢复默认关系" else "已记住这段关系")
+            choose(edit.text?.toString().orEmpty(), if (edit.text.isNullOrBlank()) "已恢复默认" else "已记住这段关系")
         })
         row.addView(pill("取消", false) {
             hideIme(edit)
             finishRelEdit()
         })
         setContent(listOf(
-            line("这段聊天的关系", "#111827", 14f, true),
-            hint("不改设置里的默认。留空就恢复默认。"),
+            line("这段聊天是", "#111827", 14f, true),
+            hint("点一个就记住，别的聊天不受影响。"),
+            row1,
+            row2,
             edit,
             row
         ))
-        setOverlayFocusable(true)
-        edit.requestFocus()
-        edit.post {
-            val imm = ctx.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-            imm.showSoftInput(edit, InputMethodManager.SHOW_IMPLICIT)
+    }
+
+    private fun chipRow(
+        presets: List<ChatRel.RelPreset>,
+        picked: String?,
+        onPick: (ChatRel.RelPreset) -> Unit
+    ): View {
+        val row = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(6), 0, 0)
         }
+        for (preset in presets) {
+            row.addView(pill(preset.label, preset.label == picked) { onPick(preset) })
+        }
+        return row
     }
 
     private fun finishRelEdit() {

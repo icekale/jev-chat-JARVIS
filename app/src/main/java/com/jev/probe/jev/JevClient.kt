@@ -7,6 +7,7 @@ import com.jev.probe.core.ChatSnapshot
 import com.jev.probe.core.Choice
 import com.jev.probe.core.MoodHint
 import com.jev.probe.core.Prefs
+import com.jev.probe.core.ReplyVoice
 import com.jev.probe.core.RankedReply
 import com.jev.probe.core.Score
 import com.jev.probe.reply.ReplyParser
@@ -112,16 +113,8 @@ class JevClient(
             }
             "$who：${it.text}"
         }
-        val sys = if (snapshot.kind == ChatKind.GROUP) {
-            "你是中文群聊回复助手。只输出一个 JSON 数组，含且仅含 3 条候选回复。" +
-                "按群的场合写：工作短而清楚，家人自然，朋友可以松一点。不要写成私聊检讨或情侣语气。" +
-                "一条直接答或接任务，一条更短，一条先观察或请对方补一句。" +
-                "每条不超过 30 字。不要 @所有人。正文里不要自己加 @（客户端会加）。不要解释，直接输出 JSON 数组。"
-        } else {
-            "你是中文即时通讯回复助手。只输出一个 JSON 数组，含且仅含 3 条候选回复文本，" +
-                "三条策略要有区别（例如：一条稳妥承接、一条给具体行动或承诺、一条简短低姿态）。" +
-                "每条不超过 40 字，口语、自然、像真人在聊天软件里发消息。不要解释，不要加引号以外的内容，直接输出 JSON 数组。"
-        } + if (steer.isNullOrBlank()) "" else "若用户消息里有「语气」，三条都必须顺着那个情绪，不要用玩笑或讲道理盖过去。"
+        val sys = ReplyVoice.system(snapshot.kind == ChatKind.GROUP) +
+            if (steer.isNullOrBlank()) "" else "若用户消息里有「语气」，三句都顺着那个情绪，但仍然用我自己的口气，不要改成讲道理。"
         val kind = if (snapshot.kind == ChatKind.GROUP) "群聊" else "私聊"
         val g = snapshot.group
         val extra = buildString {
@@ -134,14 +127,15 @@ class JevClient(
             if (!g?.speakers.isNullOrEmpty()) append("最近发言：${g!!.speakers.joinToString("、")}。")
         }
         val tone = if (steer.isNullOrBlank()) "" else "语气：$steer\n\n"
-        val user = "场景：$kind $extra\n关系：$relationship\n\n${tone}最近对话：\n$convo\n\n请给出 3 条候选回复。"
+        val voice = ReplyVoice.voiceBlock(ReplyVoice.mine(snapshot.messages))
+        val user = "场景：$kind $extra\n关系：$relationship\n\n$voice\n\n${tone}最近对话：\n$convo\n\n请给出 3 条候选回复。"
         val messages = JSONArray()
             .put(JSONObject().put("role", "system").put("content", sys))
             .put(JSONObject().put("role", "user").put("content", user))
         val body = JSONObject()
             .put("model", replyModel)
             .put("messages", messages)
-            .put("temperature", 0.8)
+            .put("temperature", 0.6)
         val resp = postJson(chatUrl, body, chatAuthKey(), extraOpenRouterHeaders = openRouterChat)
         val content = ReplyParser.extractAssistantText(resp)
         return ReplyParser.parseThree(content)
