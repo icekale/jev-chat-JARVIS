@@ -8,6 +8,7 @@ import android.content.IntentFilter
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Matrix
+import android.graphics.Rect
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -16,10 +17,14 @@ import android.util.Log
 import android.view.Display
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import com.jev.probe.capture.ocr.MlKitOcr
+import com.jev.probe.capture.ocr.OcrLine
+import com.jev.probe.capture.ocr.ScreenCapture
 import com.jev.probe.core.Affect
 import com.jev.probe.core.CapturePace
 import com.jev.probe.core.ChatGeometry
 import com.jev.probe.core.ChatHistory
+import com.jev.probe.core.BubbleRect
 import com.jev.probe.core.ChatKind
 import com.jev.probe.core.ChatRel
 import com.jev.probe.core.ChatMood
@@ -29,6 +34,7 @@ import com.jev.probe.core.DraftSteer
 import com.jev.probe.core.GroupChat
 import com.jev.probe.core.MoodHint
 import com.jev.probe.core.Msg
+import com.jev.probe.core.kb.ContextBuilder
 import com.jev.probe.core.Prefs
 import com.jev.probe.jev.JevClient
 import com.jev.probe.overlay.OverlayController
@@ -47,7 +53,9 @@ open class ChatCaptureService : AccessibilityService() {
 
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newFixedThreadPool(2)
-    private val adapters = listOf(WeChatAdapter(), FeishuAdapter()).associateBy { it.pkg }
+    private val adapters = listOf(
+        WeChatAdapter(), QQAdapter(), XAdapter(), FeishuAdapter()
+    ).associateBy { it.pkg }
 
     private fun submit(task: () -> Unit) {
         try { worker.execute(task) } catch (_: RejectedExecutionException) { }
@@ -89,6 +97,11 @@ open class ChatCaptureService : AccessibilityService() {
         }
     }
     private var quietTicks = 0
+    private val ocr = MlKitOcr()
+    private lateinit var screenCapture: ScreenCapture
+    private var ocrBusy = false
+    private var lastOcrSignature = ""
+    private val lastGoodTitle = HashMap<String, String>()
     private var wakesRegistered = false
     private val systemWake = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -116,6 +129,9 @@ open class ChatCaptureService : AccessibilityService() {
         }
         overlay?.onNeedReplies = { draftReady() }
         overlay?.onMarkAsMe = { markLatestAsMe() }
+        overlay?.onOcrCapture = { ocrCaptureManual() }
+        screenCapture = ScreenCapture(this, hideOverlay = { main.post { overlay?.hide() } })
+        submit { MlKitOcr.warmUp() }
         runCatching { KeepAliveService.sync(this) }
         registerWakes()
         main.removeCallbacks(heartbeat)
@@ -249,8 +265,17 @@ open class ChatCaptureService : AccessibilityService() {
             lastTextSig = ""
             return
         }
-        if (raw.messages.isEmpty()) return
         val p = prefs ?: return
+        if (raw.messages.isEmpty()) {
+            if (p.ocrFallback) {
+                val shot = raw
+                val sig = ocrSignature(pkg, shot.title, shot.bubbleRects)
+                if (sig == lastOcrSignature && overlay?.isShowing() == true) return
+                lastOcrSignature = sig
+                ocrCapture(shot.title, shot.bubbleRects, pkg, manual = false)
+            }
+            return
+        }
         if (!p.isAllowed(raw.title)) { overlay?.hide(); return }
 
         val textSig = CapturePace.textOf(raw.title, raw.messages)
@@ -510,12 +535,19 @@ open class ChatCaptureService : AccessibilityService() {
         val fallback = if (group) p.groupRelationship else p.relationship
         val judgeRel = ChatRel.forJudge(override, fallback, group)
         val voiceRel = ChatRel.forVoice(override, fallback, group)
+        val ctx = try {
+            ContextBuilder.build(this, snapshot, activePkg ?: "", p)
+        } catch (e: Exception) {
+            Log.w(TAG, "context build failed: ${e.message}")
+            null
+        }
+        main.post { overlay?.setContextInfo(ctx?.notes?.size ?: 0, ctx?.history?.size ?: 0) }
         val prior = lastChatKey?.let { chatMood[it] }
         val chatKey = lastChatKey
         overlay?.chatKey = chatKey
         overlay?.priorAffect = prior?.affect
         submit {
-            val judgment = client.judge(snapshot, judgeRel, MoodHint(priorAffect = prior?.affect))
+            val judgment = client.judge(snapshot, judgeRel, MoodHint(priorAffect = prior?.affect), ctx)
             val steer = if (judgment.error == null) DraftSteer.line(judgment, prior, group) else ""
             val rankHint = if (judgment.error == null) DraftSteer.rankHint(judgment, prior) else null
             val draftNow = judgment.error == null
@@ -539,7 +571,7 @@ open class ChatCaptureService : AccessibilityService() {
             }
             if (judgment.error != null || !draftNow) return@submit
             val ranked = try {
-                client.draftAndRank(snapshot, judgeRel, rankHint, steer, voiceRel)
+                client.draftAndRank(snapshot, judgeRel, rankHint, steer, voiceRel, ctx)
             } catch (_: Exception) { emptyList() }
             main.post {
                 if (gen != generation) return@post
@@ -597,6 +629,134 @@ open class ChatCaptureService : AccessibilityService() {
 
     private fun stale(gen: Long, sig: String): Boolean =
         gen != generation || currentSnapshot?.signature() != sig
+
+    private fun ocrCaptureManual() {
+        val root = rootInActiveWindow
+        val pkg = root?.packageName?.toString() ?: activePkg ?: ""
+        val title = root?.let {
+            findTitleInActionBar(it, Int.MAX_VALUE, resources.displayMetrics.widthPixels, resources, 0.15, 0.85)
+        }
+        recycleQuiet(root)
+        ocrCapture(title, emptyList(), pkg, manual = true)
+    }
+
+    private fun ocrSignature(pkg: String, title: String?, rects: List<BubbleRect>): String {
+        if (rects.isEmpty()) return "$pkg|${title ?: ""}"
+        return (title ?: "") + "|" + rects.joinToString(";") { br ->
+            val r = br.rect
+            "${r.left},${r.top},${r.right},${r.bottom},${br.side}"
+        }
+    }
+
+    private fun ocrCapture(treeTitle: String?, rects: List<BubbleRect>, pkg: String, manual: Boolean) {
+        if (ocrBusy || !::screenCapture.isInitialized) return
+        ocrBusy = true
+        screenCapture.capture { res ->
+            when (res) {
+                is ScreenCapture.Result.Failed -> {
+                    ocrBusy = false
+                    if (!manual) lastOcrSignature = ""
+                    val transient = res.code == ScreenCapture.CODE_THROTTLED || res.code == 3
+                    if (manual || !transient) overlay?.showError(res.humanMessage)
+                }
+                is ScreenCapture.Result.Ok -> {
+                    ocr.scaleX = res.scaleX
+                    ocr.scaleY = res.scaleY
+                    ocr.originX = res.originX
+                    ocr.originY = res.originY
+                    if (rects.isNotEmpty() && !manual) {
+                        val fresh = rootInActiveWindow?.let { node ->
+                            try { collectFeishuBubbleRects(node, resources) } finally { recycleQuiet(node) }
+                        }
+                        ocrByRects(res.bitmap, if (fresh.isNullOrEmpty()) rects else fresh, treeTitle, pkg)
+                    } else ocrWholeScreen(res.bitmap, treeTitle, pkg, manual)
+                }
+            }
+        }
+    }
+
+    private fun ocrByRects(bmp: Bitmap, rects: List<BubbleRect>, title: String?, pkg: String) {
+        val sx = ocr.scaleX
+        val sy = ocr.scaleY
+        val ox = ocr.originX
+        val oy = ocr.originY
+        val out = arrayOfNulls<Msg>(rects.size)
+        var remaining = rects.size
+        if (remaining == 0) {
+            ocrBusy = false
+            runCatching { bmp.recycle() }
+            return
+        }
+        rects.forEachIndexed { i, br ->
+            val region = Rect(
+                ((br.rect.left - ox) * sx).toInt(), ((br.rect.top - oy) * sy).toInt(),
+                ((br.rect.right - ox) * sx).toInt(), ((br.rect.bottom - oy) * sy).toInt()
+            )
+            ocr.recognize(bmp, region) { lines ->
+                val text = cleanBubbleText(lines.joinToString(" ") { it.text })
+                if (text.isNotEmpty()) out[i] = Msg(br.side, text)
+                remaining--
+                if (remaining == 0) {
+                    runCatching { bmp.recycle() }
+                    finishOcrSnapshot(ChatSnapshot(title, out.filterNotNull()), pkg, manual = false)
+                }
+            }
+        }
+    }
+
+    private fun ocrWholeScreen(bmp: Bitmap, treeTitle: String?, pkg: String, manual: Boolean) {
+        val region = Rect(0, (bmp.height * 0.12f).toInt(), bmp.width, (bmp.height * 0.86f).toInt())
+        ocr.recognize(bmp, region) { lines ->
+            runCatching { bmp.recycle() }
+            val msgs = groupOcrLines(lines)
+            val title = treeTitle?.takeIf { it.isNotBlank() } ?: lines.firstOrNull()?.text?.trim()?.take(24)
+            finishOcrSnapshot(ChatSnapshot(title, msgs, note = OCR_NOTE), pkg, manual)
+        }
+    }
+
+    private fun groupOcrLines(lines: List<OcrLine>): List<Msg> {
+        val usable = lines.filter { it.text.isNotBlank() && !PURE_TIME.matches(it.text.trim()) }
+            .sortedBy { it.bounds.top }
+        val out = ArrayList<Msg>()
+        val buf = StringBuilder()
+        var prev: OcrLine? = null
+        for (l in usable) {
+            val p = prev
+            if (p != null && l.bounds.top - p.bounds.bottom > maxOf(p.bounds.height(), 1) * 1.2f) {
+                if (buf.isNotEmpty()) { out.add(Msg("other", buf.toString())); buf.setLength(0) }
+            }
+            if (buf.isNotEmpty()) buf.append(' ')
+            buf.append(l.text.trim())
+            prev = l
+        }
+        if (buf.isNotEmpty()) out.add(Msg("other", buf.toString()))
+        return out
+    }
+
+    private fun cleanBubbleText(raw: String): String {
+        var t = raw.trim()
+        var changed = true
+        while (changed && t.isNotEmpty()) {
+            changed = false
+            for (tail in arrayOf("已读", "未读")) {
+                if (t.endsWith(tail)) { t = t.removeSuffix(tail).trim(); changed = true }
+            }
+            TAIL_TIME.find(t)?.let { t = t.substring(0, it.range.first).trim(); changed = true }
+        }
+        return t
+    }
+
+    private fun finishOcrSnapshot(snapshot: ChatSnapshot, pkg: String, manual: Boolean) {
+        ocrBusy = false
+        if (snapshot.messages.isEmpty()) {
+            if (manual) overlay?.showError("这一屏没认出文字")
+            return
+        }
+        val p = prefs ?: return
+        if (!p.isAllowed(snapshot.title)) { overlay?.hide(); return }
+        val textSig = CapturePace.textOf(snapshot.title, snapshot.messages)
+        publish(pkg, snapshot.copy(note = snapshot.note ?: if (manual) OCR_NOTE else null), textSig, analyze = manual || (p.ocrAutoAnalyze && snapshot.latestFrom == "other"))
+    }
 
     private fun fillInput(text: String) {
         submit {
@@ -726,5 +886,8 @@ open class ChatCaptureService : AccessibilityService() {
         private const val SHOT_TIMEOUT_MS = 2500L
         private const val SHOT_SCALE = 2
         const val ACTION_WAKE = "com.jev.probe.WAKE"
+        private const val OCR_NOTE = "这一屏是截屏认出来的，分不清谁说的，都先记成对方。"
+        private val PURE_TIME = Regex("""^\d{1,2}[:：]\d{2}$""")
+        private val TAIL_TIME = Regex("""\d{1,2}[:：]\d{2}\s*(上午|下午|AM|PM)?$""")
     }
 }

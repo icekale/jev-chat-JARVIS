@@ -134,6 +134,26 @@ class Prefs(context: Context) {
         get() = sp.getBoolean(K_AT_FILL, true)
         set(v) = sp.edit().putBoolean(K_AT_FILL, v).apply()
 
+    /** Inject this contact's older lines into the next analysis. */
+    var contextEnabled: Boolean
+        get() = sp.getBoolean(K_CTX_ENABLED, false)
+        set(v) = sp.edit().putBoolean(K_CTX_ENABLED, v).apply()
+
+    /** How many older lines to inject when [contextEnabled]. */
+    var contextHistoryCount: Int
+        get() = sp.getInt(K_CTX_COUNT, 30).coerceIn(0, 100)
+        set(v) = sp.edit().putInt(K_CTX_COUNT, v.coerceIn(0, 100)).apply()
+
+    /** Screenshot + on-device OCR when a chat window has no readable text. */
+    var ocrFallback: Boolean
+        get() = sp.getBoolean(K_OCR_FALLBACK, true)
+        set(v) = sp.edit().putBoolean(K_OCR_FALLBACK, v).apply()
+
+    /** After an automatic OCR read, analyze if the latest line is from the other person. */
+    var ocrAutoAnalyze: Boolean
+        get() = sp.getBoolean(K_OCR_AUTO, true)
+        set(v) = sp.edit().putBoolean(K_OCR_AUTO, v).apply()
+
     /** User-marked own-bubble fill color (ARGB). 0 = not calibrated. */
     var myBubbleColor: Int
         get() = sp.getInt(K_MY_BUBBLE, 0)
@@ -169,6 +189,10 @@ class Prefs(context: Context) {
         private const val K_DIGEST = "group_digest"
         private const val K_AT_FILL = "group_at_fill"
         private const val K_MY_BUBBLE = "my_bubble_color"
+        private const val K_CTX_ENABLED = "context_enabled"
+        private const val K_CTX_COUNT = "context_history_count"
+        private const val K_OCR_FALLBACK = "ocr_fallback"
+        private const val K_OCR_AUTO = "ocr_auto_analyze"
 
         const val DEFAULT_REPLY_BASE = "https://openrouter.ai/api/v1"
         // Default stays the OpenRouter DeepSeek id; change the model when you

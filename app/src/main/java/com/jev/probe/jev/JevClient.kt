@@ -6,6 +6,7 @@ import com.jev.probe.core.ChatKind
 import com.jev.probe.core.ChatSnapshot
 import com.jev.probe.core.Choice
 import com.jev.probe.core.MoodHint
+import com.jev.probe.core.kb.ChatContext
 import com.jev.probe.core.Prefs
 import com.jev.probe.core.ReplyVoice
 import com.jev.probe.core.RankedReply
@@ -44,12 +45,12 @@ class JevClient(
     }
 
     /** The 7 judgment questions only (fast, ~1s). No candidate generation. */
-    fun judge(snapshot: ChatSnapshot, relationship: String, mood: MoodHint? = null): Analysis {
+    fun judge(snapshot: ChatSnapshot, relationship: String, mood: MoodHint? = null, ctx: ChatContext? = null): Analysis {
         val start = System.currentTimeMillis()
         try {
             val body = JSONObject()
                 .put("model", jevModel)
-                .put("state", JevQuestions.buildState(snapshot, relationship, mood))
+                .put("state", JevQuestions.buildState(snapshot, relationship, mood, ctx))
                 .put("questions", JevQuestions.judge(snapshot))
             val answers = postJson(decisionsUrl, body, key).optJSONObject("answers") ?: JSONObject()
             return Analysis(
@@ -82,15 +83,16 @@ class JevClient(
         relationship: String,
         mood: MoodHint? = null,
         steer: String? = null,
-        voice: String? = null
+        voice: String? = null,
+        ctx: ChatContext? = null
     ): List<RankedReply> {
         if (chatAuthKey().isBlank()) return emptyList()
-        val candidates = generateCandidates(snapshot, voice ?: relationship, steer)
+        val candidates = generateCandidates(snapshot, voice ?: relationship, steer, ctx)
         val questions = JSONObject().put("best_reply",
             JevQuestions.rankQuestion(candidates, snapshot).getJSONObject("best_reply"))
         val body = JSONObject()
             .put("model", jevModel)
-            .put("state", JevQuestions.buildState(snapshot, relationship, mood))
+            .put("state", JevQuestions.buildState(snapshot, relationship, mood, ctx))
             .put("questions", questions)
         val answers = postJson(decisionsUrl, body, key).optJSONObject("answers") ?: JSONObject()
         return parseRanked(answers.optJSONObject("best_reply"), candidates)
@@ -105,7 +107,12 @@ class JevClient(
     }
 
     /** Ask a generative model for exactly 3 varied candidate replies (Chinese). */
-    private fun generateCandidates(snapshot: ChatSnapshot, relationship: String, steer: String?): List<String> {
+    private fun generateCandidates(
+        snapshot: ChatSnapshot,
+        relationship: String,
+        steer: String?,
+        ctx: ChatContext? = null
+    ): List<String> {
         val convo = snapshot.messages.takeLast(10).joinToString("\n") {
             val who = when {
                 it.side == "me" -> "我"
@@ -126,8 +133,9 @@ class JevClient(
             if (!g?.watchHits.isNullOrEmpty()) append("命中关注词：${g!!.watchHits.joinToString("、")}。")
             if (!g?.speakers.isNullOrEmpty()) append("最近发言：${g!!.speakers.joinToString("、")}。")
         }
+        val voiceRel = ctx?.background(relationship)?.takeIf { it.isNotBlank() }?.let { "$relationship\n$it" } ?: relationship
         val user = ReplyVoice.userPrompt(
-            group, relationship, ReplyVoice.mine(snapshot.messages), steer, extra, convo
+            group, voiceRel, ReplyVoice.mine(snapshot.messages), steer, extra, convo
         )
         val messages = JSONArray()
             .put(JSONObject().put("role", "system").put("content", sys))

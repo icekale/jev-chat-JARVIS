@@ -1,5 +1,7 @@
 package com.jev.probe.core
 
+import android.graphics.Rect
+
 /** One captured chat bubble. WeChat side: name-above=other, then avatar, then green, then X. */
 data class Msg(
     val side: String,
@@ -12,6 +14,9 @@ data class Msg(
 /** Screen box of one bubble, used to sample color when the user marks "this is me". */
 data class BubbleBound(val left: Int, val top: Int, val right: Int, val bottom: Int)
 
+/** A bubble the tree can place but not read. [rect] is in screen coordinates. */
+data class BubbleRect(val rect: Rect, val side: String)
+
 data class ChatSnapshot(
     val title: String?,
     val messages: List<Msg>,
@@ -23,7 +28,11 @@ data class ChatSnapshot(
     val lastVisibleText: String? = null,
     val skipReason: String? = null,
     /** Visible bubbles whose side may still change from a screenshot. Null = locked. */
-    val recolorBounds: List<BubbleBound?> = emptyList()
+    val recolorBounds: List<BubbleBound?> = emptyList(),
+    /** Bubbles whose text is drawn, not in the accessibility tree. OCR reads these. */
+    val bubbleRects: List<BubbleRect> = emptyList(),
+    /** Shown on the panel when the snapshot is a flat screen read. */
+    val note: String? = null
 ) {
     val latestFrom: String? get() = messages.lastOrNull()?.side
     val latestSpeaker: String? get() = messages.lastOrNull { it.side == "other" }?.speaker

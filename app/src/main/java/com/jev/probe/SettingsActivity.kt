@@ -3,6 +3,7 @@ package com.jev.probe
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.content.Intent
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -96,6 +97,13 @@ class SettingsActivity : AppCompatActivity() {
         val relEdit = edit(prefs.relationship, Prefs.DEFAULT_REL)
         card2.addView(relEdit)
         card2.addView(text("每个聊天在悬浮窗点「关系」，选伴侣、朋友、同事、家人或客户。这里只是还没选过时的兜底。", 12f, sub))
+        card2.addView(secondaryBtn("知识库与联系人") {
+            startActivity(Intent(this, KnowledgeActivity::class.java))
+        })
+        val ctxRow = toggleRow("分析时带上这个人以前的聊天", prefs.contextEnabled)
+        card2.addView(ctxRow)
+        val ocrRow = toggleRow("读不到文字时截屏识别（飞书等）", prefs.ocrFallback)
+        card2.addView(ocrRow)
         card2.addView(label("会话白名单（每行一个关键词，空=所有会话）"))
         val wlEdit = edit(prefs.whitelist.joinToString("\n"), "留空则对所有会话生效").apply {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE; minLines = 2
@@ -172,6 +180,8 @@ class SettingsActivity : AppCompatActivity() {
             prefs.myNicknames = nickEdit.text.toString().split("\n").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
             prefs.groupWatch = watchEdit.text.toString().split("\n").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
             prefs.groupDigest = (digestRow.tag as? Boolean) ?: true
+            prefs.contextEnabled = (ctxRow.tag as? Boolean) ?: false
+            prefs.ocrFallback = (ocrRow.tag as? Boolean) ?: true
             prefs.groupAtOnFill = (atFillRow.tag as? Boolean) ?: true
             prefs.groupRelationship = groupRelEdit.text.toString().ifBlank { Prefs.DEFAULT_GROUP_REL }
             prefs.overlayOpacity = seek.progress + 60

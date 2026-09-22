@@ -5,6 +5,7 @@ import android.graphics.Rect
 import android.util.TypedValue
 import android.view.accessibility.AccessibilityNodeInfo
 import com.jev.probe.core.BubbleBound
+import com.jev.probe.core.BubbleRect
 import com.jev.probe.core.ChatGeometry
 import com.jev.probe.core.ChatKind
 import com.jev.probe.core.ChatSnapshot
@@ -357,7 +358,11 @@ class FeishuAdapter : ChatAppAdapter {
             }
         }
         if (!isChat) return null
-        return finishSnapshot(title, bubbles, labels, width, dp(res, 40))
+        val rects = collectFeishuBubbleRects(root, res)
+        if (bubbles.isEmpty()) {
+            return ChatSnapshot(title = title, messages = emptyList(), bubbleRects = rects)
+        }
+        return finishSnapshot(title, bubbles, labels, width, dp(res, 40))?.copy(bubbleRects = rects)
     }
 
     private fun isChrome(id: String): Boolean =
@@ -368,4 +373,190 @@ class FeishuAdapter : ChatAppAdapter {
             id.endsWith(":id/kb_rich_text_content") ||
             id.endsWith(":id/thread_title_tv") ||
             id.endsWith(":id/thread_subtitle_tv")
+}
+
+internal fun findTitleInActionBar(
+    root: AccessibilityNodeInfo,
+    firstBubbleTop: Int,
+    width: Int,
+    res: Resources,
+    minCenterRatio: Double = 0.25,
+    maxCenterRatio: Double = 0.75
+): String? {
+    val actionBarMax = minOf(firstBubbleTop, (res.displayMetrics.heightPixels * 0.14).toInt())
+    val minCenterX = (width * minCenterRatio).toInt()
+    val maxCenterX = (width * maxCenterRatio).toInt()
+    var best: String? = null
+    var bestTop = Int.MAX_VALUE
+    walkNodes(root, 5000) { node ->
+        val text = node.text?.toString()
+        if (!text.isNullOrBlank() && text.length <= 24 && !looksLikeTimestamp(text)) {
+            val b = Rect(); node.getBoundsInScreen(b)
+            if (b.bottom in 1 until actionBarMax && b.centerX() in minCenterX..maxCenterX && b.top < bestTop) {
+                bestTop = b.top
+                best = text
+            }
+        }
+    }
+    return best
+}
+
+private fun feishuHasReadState(bubble: AccessibilityNodeInfo): Boolean {
+    val stack = ArrayDeque<AccessibilityNodeInfo>()
+    stack.addLast(bubble)
+    var guard = 0
+    while (stack.isNotEmpty() && guard < 400) {
+        guard++
+        val node = stack.removeLast()
+        val id = node.viewIdResourceName ?: ""
+        if (id.endsWith("time_read_state_container_align_bubble")) return true
+        for (i in node.childCount - 1 downTo 0) node.getChild(i)?.let { stack.addLast(it) }
+    }
+    return false
+}
+
+internal fun collectFeishuBubbleRects(root: AccessibilityNodeInfo, res: Resources): List<BubbleRect> {
+    val height = res.displayMetrics.heightPixels
+    val topBand = (height * 0.14).toInt()
+    val bottomBand = (height * 0.84).toInt()
+    val rects = ArrayList<BubbleRect>()
+    walkNodes(root, 6000) { node ->
+        val id = node.viewIdResourceName ?: ""
+        if (id.endsWith(":id/bubble_content_container")) {
+            val b = Rect(); node.getBoundsInScreen(b)
+            if (b.width() > 0 && b.height() > 0 && b.bottom > topBand && b.top < bottomBand) {
+                rects.add(BubbleRect(Rect(b), if (feishuHasReadState(node)) "me" else "other"))
+            }
+        }
+    }
+    rects.sortBy { it.rect.top }
+    return rects
+}
+
+/** QQ 9.3.x. Side is which edge the bubble sits against. */
+class QQAdapter : ChatAppAdapter {
+    override val pkg = PKG
+
+    override fun extract(
+        root: AccessibilityNodeInfo,
+        res: Resources,
+        sampler: PixelSampler?
+    ): ChatSnapshot? {
+        val width = res.displayMetrics.widthPixels
+        val bubbles = ArrayList<QQBubble>()
+        var firstBubbleTop = Int.MAX_VALUE
+        var title: String? = null
+        var hasInput = false
+        walkNodes(root, 5000) { node ->
+            val id = node.viewIdResourceName
+            val text = node.text?.toString()
+            if (id == BUBBLE_ID && !text.isNullOrBlank()) {
+                val b = Rect(); node.getBoundsInScreen(b)
+                bubbles.add(QQBubble(b.top, b.left, b.right, text))
+                if (b.top < firstBubbleTop) firstBubbleTop = b.top
+            }
+            if (!hasInput && id == INPUT_ID) hasInput = true
+            if (id == TITLE_ID && title == null) text?.let { if (it.isNotBlank()) title = it }
+        }
+        if (bubbles.isEmpty() && !hasInput) return null
+        if (title == null) title = findTitleInActionBar(root, firstBubbleTop, width, res)
+        if (bubbles.isEmpty()) return ChatSnapshot(title, emptyList())
+        val avatarEdge = (width * 0.13).toInt()
+        bubbles.sortBy { it.top }
+        val msgs = bubbles.map { b ->
+            val dl = kotlin.math.abs(b.left - avatarEdge)
+            val dr = kotlin.math.abs((width - avatarEdge) - b.right)
+            Msg(if (dr < dl) "me" else "other", b.text)
+        }
+        return ChatSnapshot(title, msgs)
+    }
+
+    private data class QQBubble(val top: Int, val left: Int, val right: Int, val text: String)
+
+    companion object {
+        const val PKG = "com.tencent.mobileqq"
+        private const val BUBBLE_ID = "com.tencent.mobileqq:id/mjn"
+        private const val TITLE_ID = "com.tencent.mobileqq:id/371"
+        private const val INPUT_ID = "com.tencent.mobileqq:id/input"
+    }
+}
+
+private val X_TAIL_TIME = Regex("""\d{1,2}[:：]\d{2}\s*(上午|下午|AM|PM|am|pm)?$""")
+private val X_TRAILING_DOTS = Regex("""。+$""")
+
+private fun parseXDesc(desc: String): Pair<String, String>? {
+    val full = desc.indexOf('：')
+    val half = desc.indexOf(": ")
+    val cut: Int
+    val skip: Int
+    when {
+        full >= 0 && (half < 0 || full <= half) -> { cut = full; skip = 1 }
+        half >= 0 -> { cut = half; skip = 2 }
+        else -> return null
+    }
+    val sender = desc.substring(0, cut).trim()
+    var body = desc.substring(cut + skip).trim()
+    for (tail in arrayOf("Read。", "Read", "已读。", "已读")) {
+        if (body.endsWith(tail)) { body = body.removeSuffix(tail).trim(); break }
+    }
+    body = X_TRAILING_DOTS.replace(body, "").trim()
+    X_TAIL_TIME.find(body)?.let { body = body.substring(0, it.range.first).trim() }
+    body = X_TRAILING_DOTS.replace(body, "").trim()
+    if (sender.isEmpty() || body.isEmpty()) return null
+    return sender to body
+}
+
+/** X / Twitter direct messages. Side comes from the sender label, not geometry. */
+class XAdapter : ChatAppAdapter {
+    override val pkg = PKG
+
+    override fun extract(
+        root: AccessibilityNodeInfo,
+        res: Resources,
+        sampler: PixelSampler?
+    ): ChatSnapshot? {
+        val width = res.displayMetrics.widthPixels
+        val rows = ArrayList<XRow>()
+        var firstRowTop = Int.MAX_VALUE
+        var hasInput = false
+        var hasMessageRowShape = false
+        var hasDmLabel = false
+        var hasNewDmMarker = false
+        var sawListHeading = false
+        walkNodes(root, 6000) { node ->
+            val cls = node.className?.toString()
+            if (!hasInput && (node.isEditable || cls == "android.widget.EditText")) hasInput = true
+            val desc = node.contentDescription?.toString()
+            if (desc == "新私信" || desc == "New message") hasNewDmMarker = true
+            if (cls == "android.view.View" && !desc.isNullOrBlank() && !desc.contains(", @")) {
+                val b = Rect(); node.getBoundsInScreen(b)
+                if (b.left == 0 && b.right == width) {
+                    if (desc.contains('：') || desc.contains(": ")) hasMessageRowShape = true
+                    val parsed = parseXDesc(desc)
+                    if (parsed != null) {
+                        rows.add(XRow(b.top, parsed.first, parsed.second))
+                        if (b.top < firstRowTop) firstRowTop = b.top
+                    }
+                }
+            }
+            if (cls == "android.widget.TextView") {
+                val text = node.text?.toString()?.trim()
+                if (text == "私信" || text == "Message" || text == "发送私信") hasDmLabel = true
+                if (text == "聊天" || text == "Messages") sawListHeading = true
+            }
+        }
+        if (hasNewDmMarker || (sawListHeading && rows.isEmpty())) return null
+        if (!hasInput || !(hasMessageRowShape || hasDmLabel)) return null
+        val title = findTitleInActionBar(root, firstRowTop, width, res, 0.15, 0.85)
+        if (rows.isEmpty()) return ChatSnapshot(title, emptyList())
+        rows.sortBy { it.top }
+        val msgs = rows.map { Msg(if (it.sender == "你" || it.sender == "You") "me" else "other", it.text) }
+        return ChatSnapshot(title, msgs)
+    }
+
+    private data class XRow(val top: Int, val sender: String, val text: String)
+
+    companion object {
+        const val PKG = "com.twitter.android"
+    }
 }

@@ -57,6 +57,7 @@ class OverlayController(private val ctx: Context) {
     var onManualAnalyze: (() -> Unit)? = null
     var onNeedReplies: (() -> Unit)? = null
     var onMarkAsMe: (() -> Unit)? = null
+    var onOcrCapture: (() -> Unit)? = null
     var chatKey: String? = null
     var priorAffect: String? = null
 
@@ -71,6 +72,8 @@ class OverlayController(private val ctx: Context) {
     private var bubbleMenu: View? = null
     private var lastSnapshot: ChatSnapshot? = null
     private var editingRel = false
+    private var panelNote: String? = null
+    private var contextBits: String? = null
     private var busy = false
 
     private fun dp(v: Int) = TypedValue.applyDimension(
@@ -255,6 +258,7 @@ class OverlayController(private val ctx: Context) {
         menu.addView(menuItem("这段关系") { dismissMenu(); openRelEditor() })
         menu.addView(menuItem("最新这条是我说的") { dismissMenu(); onMarkAsMe?.invoke() })
         menu.addView(menuItem("重新分析") { dismissMenu(); onManualAnalyze?.invoke() })
+        menu.addView(menuItem("截屏识别一次") { dismissMenu(); onOcrCapture?.invoke() })
         menu.addView(menuItem("打开设置") { openSettings(); dismissMenu() })
         menu.addView(menuItem("隐藏助手（本次）") { hide() })
         menu.addView(menuItem("取消") { dismissMenu() })
@@ -379,6 +383,12 @@ class OverlayController(private val ctx: Context) {
 
     fun toast(msg: String) = Toast.makeText(ctx, msg, Toast.LENGTH_SHORT).show()
 
+    fun setNote(note: String?) { panelNote = note }
+
+    fun setContextInfo(notes: Int, history: Int) {
+        contextBits = if (notes == 0 && history == 0) null else "知识库 $notes 条 · 历史 $history 条"
+    }
+
     fun forgetJudgment() {
         lastJudgment = null
     }
@@ -420,6 +430,8 @@ class OverlayController(private val ctx: Context) {
             }
         }
         lastSnapshot?.let { views.addAll(transcriptViews(it, 3)) }
+        panelNote?.let { views.add(hint(it)) }
+        contextBits?.let { views.add(hint(it)) }
 
         a.dangerLevel?.let {
             views.add(dangerBadge(it.score.roundToInt(), it.maxLevel))

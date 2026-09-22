@@ -5,8 +5,8 @@
     android:accessibilityFlags="flagReportViewIds|flagRetrieveInteractiveWindows|flagIncludeNotImportantViews"
     android:canRetrieveWindowContent="true"
     android:canTakeScreenshot="true"
+    android:packageNames="com.tencent.mm,com.tencent.mobileqq,com.twitter.android,com.ss.android.lark"
     android:notificationTimeout="100"
-    android:packageNames="com.tencent.mm,com.ss.android.lark"
     android:isAccessibilityTool="true"
     android:settingsActivity="com.jev.probe.MainActivity"
     android:description="@string/a11y_desc_disguised" />

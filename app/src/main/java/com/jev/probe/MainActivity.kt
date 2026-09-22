@@ -144,6 +144,9 @@ class MainActivity : AppCompatActivity() {
 
         // Actions
         container.addView(sectionLabel("其他"))
+        container.addView(actionRow("知识库", "笔记和联系人。分析时带上这个人的备注和以前的聊天") {
+            startActivity(Intent(this, KnowledgeActivity::class.java))
+        })
         container.addView(actionRow("通知栏磁贴", "下拉通知栏里的 Jev。开着就保活，点一下也能把气泡唤回来") {
             KeepAliveTile.askToAdd(this)
         })
