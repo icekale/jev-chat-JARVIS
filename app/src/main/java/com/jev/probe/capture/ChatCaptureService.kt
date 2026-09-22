@@ -23,7 +23,6 @@ import com.jev.probe.core.DraftSteer
 import com.jev.probe.core.GroupChat
 import com.jev.probe.core.MoodHint
 import com.jev.probe.core.Msg
-import com.jev.probe.core.PanelCue
 import com.jev.probe.core.Prefs
 import com.jev.probe.jev.JevClient
 import com.jev.probe.overlay.OverlayController
@@ -69,7 +68,7 @@ open class ChatCaptureService : AccessibilityService() {
     private val chatMood = LinkedHashMap<String, ChatMood>(16, 0.75f, true)
     private var lastChatKey: String? = null
 
-    private val debounce = Runnable { runAnalysis(false) }
+    private val debounce = Runnable { runAnalysis() }
     private var readySnapshot: ChatSnapshot? = null
     private var readyRel: String = ""
     private var readyHint: MoodHint? = null
@@ -94,7 +93,7 @@ open class ChatCaptureService : AccessibilityService() {
         if (prefs == null) prefs = Prefs(this)
         overlay = OverlayController(this)
         overlay?.onManualAnalyze = {
-            currentSnapshot?.let { pendingSnapshot = it; runAnalysis(true) }
+            currentSnapshot?.let { pendingSnapshot = it; runAnalysis() }
         }
         overlay?.onNeedReplies = { draftReady() }
         overlay?.onMarkAsMe = { markLatestAsMe() }
@@ -403,7 +402,7 @@ open class ChatCaptureService : AccessibilityService() {
         overlay?.toast(if (savedColor) "已记成我的发言，并记住气泡颜色" else "已记成我的发言")
     }
 
-    private fun runAnalysis(wantReplies: Boolean) {
+    private fun runAnalysis() {
         val snapshot = pendingSnapshot ?: return
         val p = prefs ?: return
         if (snapshot.group?.moneyRelated == true) {
@@ -430,7 +429,7 @@ open class ChatCaptureService : AccessibilityService() {
             val judgment = client.judge(snapshot, rel, MoodHint(priorAffect = prior?.affect))
             val steer = if (judgment.error == null) DraftSteer.line(judgment, prior, group) else ""
             val rankHint = if (judgment.error == null) DraftSteer.rankHint(judgment, prior) else null
-            val draftNow = judgment.error == null && (wantReplies || PanelCue.shouldAutoOpen(judgment))
+            val draftNow = judgment.error == null
             if (stale(gen, sig)) {
                 main.post { if (gen == generation) overlay?.stopBusy() }
                 return@submit
@@ -446,14 +445,7 @@ open class ChatCaptureService : AccessibilityService() {
                     overlay?.showError(judgment.error)
                 } else {
                     if (chatKey != null) rememberMood(chatKey, prior, judgment.affect, judgment.tensionResolved)
-                    overlay?.onJudged(judgment, drafting = draftNow)
-                    if (!draftNow) {
-                        readySnapshot = snapshot
-                        readyRel = rel
-                        readyHint = rankHint
-                        readySteer = steer
-                        readySig = sig
-                    }
+                    overlay?.onJudged(judgment, drafting = true)
                 }
             }
             if (judgment.error != null || !draftNow) return@submit
@@ -469,10 +461,10 @@ open class ChatCaptureService : AccessibilityService() {
         }
     }
 
-    /** Quiet judgments skip the draft until the bubble is opened. */
+    /** Retries drafting if the panel opened before any replies were stored. */
     private fun draftReady() {
         val snapshot = readySnapshot ?: run {
-            currentSnapshot?.let { pendingSnapshot = it; runAnalysis(true) }
+            currentSnapshot?.let { pendingSnapshot = it; runAnalysis() }
             return
         }
         val p = prefs ?: return
