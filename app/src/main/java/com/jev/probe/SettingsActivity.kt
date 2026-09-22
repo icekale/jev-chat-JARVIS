@@ -102,7 +102,7 @@ class SettingsActivity : AppCompatActivity() {
         })
         val ctxRow = toggleRow("分析时带上这个人以前的聊天", prefs.contextEnabled)
         card2.addView(ctxRow)
-        val ocrRow = toggleRow("读不到文字时截屏识别（飞书等）", prefs.ocrFallback)
+        val ocrRow = toggleRow("读不到文字时截屏识别", prefs.ocrFallback)
         card2.addView(ocrRow)
         card2.addView(label("会话白名单（每行一个关键词，空=所有会话）"))
         val wlEdit = edit(prefs.whitelist.joinToString("\n"), "留空则对所有会话生效").apply {

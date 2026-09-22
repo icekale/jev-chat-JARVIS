@@ -53,9 +53,7 @@ open class ChatCaptureService : AccessibilityService() {
 
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newFixedThreadPool(2)
-    private val adapters = listOf(
-        WeChatAdapter(), QQAdapter(), XAdapter(), FeishuAdapter()
-    ).associateBy { it.pkg }
+    private val adapters = listOf(WeChatAdapter()).associateBy { it.pkg }
 
     private fun submit(task: () -> Unit) {
         try { worker.execute(task) } catch (_: RejectedExecutionException) { }
@@ -664,12 +662,8 @@ open class ChatCaptureService : AccessibilityService() {
                     ocr.scaleY = res.scaleY
                     ocr.originX = res.originX
                     ocr.originY = res.originY
-                    if (rects.isNotEmpty() && !manual) {
-                        val fresh = rootInActiveWindow?.let { node ->
-                            try { collectFeishuBubbleRects(node, resources) } finally { recycleQuiet(node) }
-                        }
-                        ocrByRects(res.bitmap, if (fresh.isNullOrEmpty()) rects else fresh, treeTitle, pkg)
-                    } else ocrWholeScreen(res.bitmap, treeTitle, pkg, manual)
+                    if (rects.isNotEmpty() && !manual) ocrByRects(res.bitmap, rects, treeTitle, pkg)
+                    else ocrWholeScreen(res.bitmap, treeTitle, pkg, manual)
                 }
             }
         }
