@@ -21,6 +21,7 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.jev.probe.capture.ChatCaptureService
 import com.jev.probe.capture.KeepAliveService
+import com.jev.probe.capture.KeepAliveTile
 import com.jev.probe.core.OemSettings
 import com.jev.probe.core.Prefs
 import com.jev.probe.shizuku.ShizukuUnlock
@@ -72,7 +73,8 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         build()
         scroll.post { scroll.scrollTo(0, lastScrollY) }
-        runCatching { KeepAliveService.start(this) }
+        runCatching { KeepAliveService.sync(this) }
+        KeepAliveTile.refresh(this)
         runCatching {
             sendBroadcast(Intent(ChatCaptureService.ACTION_WAKE).setPackage(packageName))
         }
@@ -142,6 +144,9 @@ class MainActivity : AppCompatActivity() {
 
         // Actions
         container.addView(sectionLabel("其他"))
+        container.addView(actionRow("通知栏磁贴", "下拉通知栏里的 Jev。开着就保活，点一下也能把气泡唤回来") {
+            KeepAliveTile.askToAdd(this)
+        })
         container.addView(actionRow("设置", "接口 · 密钥 · 模型 · 关系 · 透明度 · 会话白名单") {
             startActivity(Intent(this, SettingsActivity::class.java))
         })
@@ -150,6 +155,8 @@ class MainActivity : AppCompatActivity() {
         val toggle = bigToggle(prefs.enabled)
         toggle.setOnClickListener {
             prefs.enabled = !prefs.enabled
+            KeepAliveService.sync(this)
+            KeepAliveTile.refresh(this)
             build()
         }
         container.addView(toggle)

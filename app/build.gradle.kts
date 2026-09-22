@@ -30,8 +30,8 @@ android {
         applicationId = "com.jev.probe"
         minSdk = 30
         targetSdk = 35
-        versionCode = 20
-        versionName = "1.3.15"
+        versionCode = 21
+        versionName = "1.3.16"
     }
 
     splits {

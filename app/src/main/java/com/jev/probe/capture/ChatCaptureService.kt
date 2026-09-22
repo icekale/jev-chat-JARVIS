@@ -116,7 +116,7 @@ open class ChatCaptureService : AccessibilityService() {
         }
         overlay?.onNeedReplies = { draftReady() }
         overlay?.onMarkAsMe = { markLatestAsMe() }
-        runCatching { KeepAliveService.start(this) }
+        runCatching { KeepAliveService.sync(this) }
         registerWakes()
         main.removeCallbacks(heartbeat)
         main.post(heartbeat)
@@ -165,7 +165,7 @@ open class ChatCaptureService : AccessibilityService() {
                 shotBusy = false
                 nudgeService()
                 lastTextSig = ""
-                runCatching { KeepAliveService.start(this) }
+                runCatching { KeepAliveService.sync(this) }
             }
             scheduleCapture()
         } else {
@@ -181,7 +181,7 @@ open class ChatCaptureService : AccessibilityService() {
         quietTicks = 0
         main.removeCallbacks(shotWatch)
         nudgeService()
-        runCatching { KeepAliveService.start(this) }
+        runCatching { KeepAliveService.sync(this) }
         overlay?.hide()
         lastTextSig = ""
         main.removeCallbacks(heartbeat)

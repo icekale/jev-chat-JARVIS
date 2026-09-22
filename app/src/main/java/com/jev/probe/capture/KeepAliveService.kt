@@ -9,6 +9,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import com.jev.probe.core.Prefs
 
 /**
  * A minimal foreground service whose only job is to keep the app process at
@@ -46,10 +47,18 @@ class KeepAliveService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     companion object {
+        fun sync(ctx: Context) {
+            if (Prefs(ctx).enabled) start(ctx) else stop(ctx)
+        }
+
         fun start(ctx: Context) {
             val i = Intent(ctx, KeepAliveService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) ctx.startForegroundService(i)
             else ctx.startService(i)
+        }
+
+        fun stop(ctx: Context) {
+            ctx.stopService(Intent(ctx, KeepAliveService::class.java))
         }
     }
 }
