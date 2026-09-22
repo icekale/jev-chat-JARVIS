@@ -529,7 +529,6 @@ class OverlayController(private val ctx: Context) {
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
             ).apply { topMargin = dp(6) }
-            setOnClickListener { onFill(text) }
         }
         c.addView(TextView(ctx).apply {
             this.text = "#$rank · ${pct}%"
@@ -541,10 +540,13 @@ class OverlayController(private val ctx: Context) {
             this.text = text
             setTextColor(Color.parseColor("#111827"))
             textSize = 14f
-            setPadding(0, dp(3), 0, dp(6))
+            setPadding(0, dp(3), 0, dp(7))
             setLineSpacing(dp(2).toFloat(), 1f)
         })
-        c.addView(pill("复制", false) { copy(text) })
+        val btns = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
+        btns.addView(pill("复制", false) { copy(text) })
+        btns.addView(pill("填入", true) { onFill(text) })
+        c.addView(btns)
         return c
     }
 
