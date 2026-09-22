@@ -149,6 +149,7 @@ class GroupChatTest {
         assertTrue(!GroupChat.shouldAutoAnalyze(groupHit, true, GroupAuto.OFF))
         val dm = ChatSnapshot("小王", listOf(Msg("other", "在吗")))
         assertTrue(GroupChat.shouldAutoAnalyze(dm, true, GroupAuto.MENTION))
+        assertEquals(GroupAuto.OFF, GroupAuto.from(null))
     }
 
     @Test fun contextOpenAsk() {

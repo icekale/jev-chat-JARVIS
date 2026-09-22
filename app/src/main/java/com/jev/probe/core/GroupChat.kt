@@ -8,7 +8,7 @@ enum class GroupAuto(val id: String, val label: String) {
     OFF("off", "只手动");
 
     companion object {
-        fun from(raw: String?): GroupAuto = entries.find { it.id == raw } ?: MENTION
+        fun from(raw: String?): GroupAuto = entries.find { it.id == raw } ?: OFF
     }
 }
 

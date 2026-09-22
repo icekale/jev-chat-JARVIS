@@ -87,7 +87,7 @@ class Prefs(context: Context) {
 
     /** Group chats: only @me (default), every message, or manual only. */
     var groupAuto: GroupAuto
-        get() = GroupAuto.from(sp.getString(K_GROUP_AUTO, GroupAuto.MENTION.id))
+        get() = GroupAuto.from(sp.getString(K_GROUP_AUTO, GroupAuto.OFF.id))
         set(v) = sp.edit().putString(K_GROUP_AUTO, v.id).apply()
 
     /** Nicknames used to detect @you in a group. Empty → only @我 / @所有人. */

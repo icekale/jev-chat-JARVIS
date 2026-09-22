@@ -109,7 +109,7 @@ class SettingsActivity : AppCompatActivity() {
         card2.addView(label("群聊自动分析"))
         var selectedGroupAuto = prefs.groupAuto
         card2.addView(groupAutoRow(selectedGroupAuto) { selectedGroupAuto = it })
-        card2.addView(text("「与我相关」= @你 / 叫你办事 / 命中关注词 / 同一个人还在追问未回的事。", 12f, sub))
+        card2.addView(text("默认只手动，点气泡再分析。私聊不受影响。「与我相关」= @你 / 叫你办事 / 命中关注词 / 同一个人还在追问未回的事。", 12f, sub))
         card2.addView(label("我在群里的昵称（每行一个，用来识别 @你）"))
         val nickEdit = edit(prefs.myNicknames.joinToString("\n"), "例如微信显示名，可多行").apply {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE; minLines = 2
