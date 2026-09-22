@@ -58,6 +58,7 @@ class OverlayController(private val ctx: Context) {
     var onNeedReplies: (() -> Unit)? = null
     var onMarkAsMe: (() -> Unit)? = null
     var onOcrCapture: (() -> Unit)? = null
+    var onSaveContact: (() -> Unit)? = null
     var chatKey: String? = null
     var priorAffect: String? = null
 
@@ -252,8 +253,9 @@ class OverlayController(private val ctx: Context) {
             background = card(12, panelBg(), stroke = true)
             elevation = dp(8).toFloat()
             setPadding(dp(4), dp(4), dp(4), dp(4))
-            layoutParams = FrameLayout.LayoutParams(dp(188), ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(56) }
+            layoutParams = FrameLayout.LayoutParams(dp(232), ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(56) }
         }
+        menu.addView(menuItem("把当前会话存为联系人") { dismissMenu(); onSaveContact?.invoke() })
         menu.addView(menuItem("读到的记录") { dismissMenu(); showTranscript() })
         menu.addView(menuItem("这段关系") { dismissMenu(); openRelEditor() })
         menu.addView(menuItem("最新这条是我说的") { dismissMenu(); onMarkAsMe?.invoke() })
@@ -385,8 +387,8 @@ class OverlayController(private val ctx: Context) {
 
     fun setNote(note: String?) { panelNote = note }
 
-    fun setContextInfo(notes: Int, history: Int) {
-        contextBits = if (notes == 0 && history == 0) null else "知识库 $notes 条 · 历史 $history 条"
+    fun setContextInfo(notes: Int, history: Int, line: String? = null) {
+        contextBits = line ?: if (notes == 0 && history == 0) null else "知识库 $notes 条 · 历史 $history 条"
     }
 
     fun forgetJudgment() {

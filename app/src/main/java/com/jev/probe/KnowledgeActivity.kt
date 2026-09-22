@@ -71,6 +71,20 @@ class KnowledgeActivity : AppCompatActivity() {
             12f, sub).apply { setPadding(0, dp(6), 0, dp(4)) })
         container.addView(tabs())
         if (tab == 0) renderNotes() else renderContacts()
+        container.addView(text("清空知识库与历史", 13f, red, bold = true).apply {
+            setPadding(dp(2), dp(18), 0, 0)
+            setOnClickListener {
+                val n = store.counts()
+                confirm(
+                    "清空知识库与历史",
+                    "删掉全部笔记、联系人和聊天历史？只清本机这份，不可恢复。"
+                ) {
+                    store.clearAll()
+                    toast("已清空（${n.notes} 条笔记、${n.contacts} 个联系人、${n.logLines} 条历史）")
+                    render()
+                }
+            }
+        })
     }
 
     private fun tabs(): View {

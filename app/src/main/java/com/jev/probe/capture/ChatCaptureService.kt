@@ -35,6 +35,7 @@ import com.jev.probe.core.GroupChat
 import com.jev.probe.core.MoodHint
 import com.jev.probe.core.Msg
 import com.jev.probe.core.kb.ContextBuilder
+import com.jev.probe.core.kb.KbStore
 import com.jev.probe.core.Prefs
 import com.jev.probe.jev.JevClient
 import com.jev.probe.overlay.OverlayController
@@ -128,6 +129,7 @@ open class ChatCaptureService : AccessibilityService() {
         overlay?.onNeedReplies = { draftReady() }
         overlay?.onMarkAsMe = { markLatestAsMe() }
         overlay?.onOcrCapture = { ocrCaptureManual() }
+        overlay?.onSaveContact = { saveCurrentContact() }
         screenCapture = ScreenCapture(this, hideOverlay = { main.post { overlay?.hide() } })
         submit { MlKitOcr.warmUp() }
         runCatching { KeepAliveService.sync(this) }
@@ -539,7 +541,16 @@ open class ChatCaptureService : AccessibilityService() {
             Log.w(TAG, "context build failed: ${e.message}")
             null
         }
-        main.post { overlay?.setContextInfo(ctx?.notes?.size ?: 0, ctx?.history?.size ?: 0) }
+        val noteCount = ctx?.notes?.size ?: 0
+        val histCount = ctx?.history?.size ?: 0
+        val matched = ctx?.contact != null
+        main.post {
+            overlay?.setContextInfo(
+                noteCount,
+                histCount,
+                if (matched || noteCount > 0 || histCount > 0) "知识库 $noteCount 条 · 历史 $histCount 条" else null
+            )
+        }
         val prior = lastChatKey?.let { chatMood[it] }
         val chatKey = lastChatKey
         overlay?.chatKey = chatKey
@@ -627,6 +638,13 @@ open class ChatCaptureService : AccessibilityService() {
 
     private fun stale(gen: Long, sig: String): Boolean =
         gen != generation || currentSnapshot?.signature() != sig
+
+    private fun saveCurrentContact() {
+        val title = currentSnapshot?.title
+        val pkg = activePkg ?: WeChatAdapter.PKG
+        val msg = KbStore.get(this).saveOrMergeContact(title ?: "", pkg)
+        overlay?.toast(msg)
+    }
 
     private fun ocrCaptureManual() {
         val root = rootInActiveWindow
@@ -865,6 +883,8 @@ open class ChatCaptureService : AccessibilityService() {
         main.removeCallbacks(shotWatch)
         overlay?.onManualAnalyze = null
         overlay?.onNeedReplies = null
+        overlay?.onOcrCapture = null
+        overlay?.onSaveContact = null
         overlay?.onMarkAsMe = null
         overlay?.hide()
         overlay = null
