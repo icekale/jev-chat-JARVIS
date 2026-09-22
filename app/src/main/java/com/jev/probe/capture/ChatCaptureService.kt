@@ -1,9 +1,14 @@
 package com.jev.probe.capture
 
 import android.accessibilityservice.AccessibilityService
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Matrix
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -83,6 +88,19 @@ open class ChatCaptureService : AccessibilityService() {
             main.postDelayed(this, 1500)
         }
     }
+    private var quietTicks = 0
+    private var wakesRegistered = false
+    private val systemWake = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
+                Intent.ACTION_SCREEN_OFF -> onScreenOff()
+                Intent.ACTION_SCREEN_ON, Intent.ACTION_USER_PRESENT -> wake()
+            }
+        }
+    }
+    private val appWake = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) { wake() }
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -99,6 +117,7 @@ open class ChatCaptureService : AccessibilityService() {
         overlay?.onNeedReplies = { draftReady() }
         overlay?.onMarkAsMe = { markLatestAsMe() }
         runCatching { KeepAliveService.start(this) }
+        registerWakes()
         main.removeCallbacks(heartbeat)
         main.post(heartbeat)
         main.postDelayed({ if (prefs?.enabled == true) runCatching { maybeCapture() } }, 900)
@@ -137,10 +156,76 @@ open class ChatCaptureService : AccessibilityService() {
         val root = rootInActiveWindow
         val pkg = root?.packageName?.toString()
         recycleQuiet(root)
-        if (pkg !in adapters && overlay?.isShowing() == true) overlay?.hide()
-        else if (pkg in adapters && overlay?.isShowing() != true && prefs?.enabled == true) {
+        val showing = overlay?.isShowing() == true
+        if (pkg !in adapters && showing) overlay?.hide()
+        val want = prefs?.enabled == true && pkg in adapters
+        if (want && !showing) {
+            quietTicks++
+            if (quietTicks == 4 || quietTicks % 16 == 0) {
+                shotBusy = false
+                nudgeService()
+                lastTextSig = ""
+                runCatching { KeepAliveService.start(this) }
+            }
             scheduleCapture()
+        } else {
+            quietTicks = 0
         }
+    }
+
+    /** ColorOS drops the overlay and stops a11y events after a long screen-off. Rebind. */
+    private fun wake() {
+        Log.i(TAG, "wake")
+        shotBusy = false
+        shotEpoch++
+        quietTicks = 0
+        main.removeCallbacks(shotWatch)
+        nudgeService()
+        runCatching { KeepAliveService.start(this) }
+        overlay?.hide()
+        lastTextSig = ""
+        main.removeCallbacks(heartbeat)
+        main.post(heartbeat)
+        if (prefs?.enabled == true) {
+            main.removeCallbacks(captureSoon)
+            main.post { maybeCapture() }
+        }
+    }
+
+    private fun onScreenOff() {
+        shotBusy = false
+        shotEpoch++
+        main.removeCallbacks(shotWatch)
+        overlay?.hide()
+    }
+
+    private fun nudgeService() {
+        val info = serviceInfo ?: return
+        runCatching { setServiceInfo(info) }
+    }
+
+    private fun registerWakes() {
+        if (wakesRegistered) return
+        val sys = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_SCREEN_OFF)
+            addAction(Intent.ACTION_USER_PRESENT)
+        }
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(systemWake, sys, Context.RECEIVER_EXPORTED)
+            registerReceiver(appWake, IntentFilter(ACTION_WAKE), Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(systemWake, sys)
+            registerReceiver(appWake, IntentFilter(ACTION_WAKE))
+        }
+        wakesRegistered = true
+    }
+
+    private fun unregisterWakes() {
+        if (!wakesRegistered) return
+        runCatching { unregisterReceiver(systemWake) }
+        runCatching { unregisterReceiver(appWake) }
+        wakesRegistered = false
     }
 
     private fun maybeCapture() {
@@ -618,6 +703,7 @@ open class ChatCaptureService : AccessibilityService() {
     override fun onInterrupt() {}
 
     override fun onDestroy() {
+        unregisterWakes()
         super.onDestroy()
         main.removeCallbacks(heartbeat)
         main.removeCallbacks(captureSoon)
@@ -639,5 +725,6 @@ open class ChatCaptureService : AccessibilityService() {
         private const val SHOT_TTL_MS = 800L
         private const val SHOT_TIMEOUT_MS = 2500L
         private const val SHOT_SCALE = 2
+        const val ACTION_WAKE = "com.jev.probe.WAKE"
     }
 }

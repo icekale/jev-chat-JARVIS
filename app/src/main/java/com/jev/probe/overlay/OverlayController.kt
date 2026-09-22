@@ -61,7 +61,10 @@ class OverlayController(private val ctx: Context) {
     var priorAffect: String? = null
 
     /** Whether the overlay window is currently on screen. */
-    fun isShowing(): Boolean = root?.isAttachedToWindow == true
+    fun isShowing(): Boolean {
+        val r = root ?: return false
+        return r.isAttachedToWindow && r.windowToken != null
+    }
 
     private var lastJudgment: Analysis? = null
     private var lastFill: ((String) -> Unit)? = null
@@ -95,7 +98,7 @@ class OverlayController(private val ctx: Context) {
     private fun ensureRoot() {
         val existing = root
         if (existing != null) {
-            if (existing.isAttachedToWindow) return
+            if (existing.isAttachedToWindow && existing.windowToken != null) return
             root = null
             bubble = null
             panel = null
@@ -103,6 +106,7 @@ class OverlayController(private val ctx: Context) {
             bubbleMenu = null
             expanded = false
             editingRel = false
+            runCatching { wm.removeView(existing) }
         }
         if (!canOverlay()) { android.util.Log.w("JEVASSIST", "overlay: canDrawOverlays=false"); return }
         val params = WindowManager.LayoutParams(
@@ -380,13 +384,13 @@ class OverlayController(private val ctx: Context) {
     }
 
     fun hide() {
-        val r = root ?: return
-        runCatching { wm.removeView(r) }
+        val r = root
         root = null; bubble = null; panel = null; contentBox = null
         bubbleMenu = null; expanded = false
         editingRel = false
         busy = false
         lastJudgment = null; lastFill = null; lastSnapshot = null
+        if (r != null) runCatching { wm.removeView(r) }
     }
 
     // --------------------------------------------------------------- rendering

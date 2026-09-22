@@ -19,6 +19,8 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import com.jev.probe.capture.ChatCaptureService
+import com.jev.probe.capture.KeepAliveService
 import com.jev.probe.core.OemSettings
 import com.jev.probe.core.Prefs
 import com.jev.probe.shizuku.ShizukuUnlock
@@ -70,6 +72,10 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         build()
         scroll.post { scroll.scrollTo(0, lastScrollY) }
+        runCatching { KeepAliveService.start(this) }
+        runCatching {
+            sendBroadcast(Intent(ChatCaptureService.ACTION_WAKE).setPackage(packageName))
+        }
     }
 
     override fun onRequestPermissionsResult(
