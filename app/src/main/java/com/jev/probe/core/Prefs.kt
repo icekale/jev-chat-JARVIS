@@ -51,7 +51,7 @@ class Prefs(context: Context) {
     var relationship: String
         get() {
             val v = sp.getString(K_REL, null)
-            if (v.isNullOrBlank() || v == LEGACY_PARTNER_REL) return DEFAULT_REL
+            if (v.isNullOrBlank() || v == LEGACY_PARTNER_REL || v == LEGACY_UNKNOWN_REL) return DEFAULT_REL
             return v
         }
         set(v) = sp.edit().putString(K_REL, v).apply()
@@ -174,10 +174,11 @@ class Prefs(context: Context) {
         // Default stays the OpenRouter DeepSeek id; change the model when you
         // point replyBaseUrl at api.openai.com / DeepSeek / a local proxy.
         const val DEFAULT_REPLY_MODEL = "deepseek/deepseek-chat-v3.1"
-        const val DEFAULT_REL = "关系还没定。from=me 是我，from=other 是对方。按我在对话里的口气回，不要默认成伴侣或客服。"
+        const val DEFAULT_REL = ChatRel.UNKNOWN_VOICE
         private const val LEGACY_PARTNER_REL = "对方是我的伴侣；from=me 的是我发的，from=other 的是对方发的"
-        const val DEFAULT_GROUP_REL =
-            "这是一个多人群聊。from=me 是我，speaker 是群成员昵称。先判断是不是在叫我，再决定回不回。不要用私聊情侣语气。"
+        private const val LEGACY_UNKNOWN_REL =
+            "关系还没定。from=me 是我，from=other 是对方。按我在对话里的口气回，不要默认成伴侣或客服。"
+        const val DEFAULT_GROUP_REL = ChatRel.GROUP_VOICE
 
         /** Accepts a host, /v1 base, or a full /chat/completions URL. */
         fun chatCompletionsUrl(raw: String): String {

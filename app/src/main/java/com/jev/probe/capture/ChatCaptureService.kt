@@ -16,6 +16,7 @@ import com.jev.probe.core.CapturePace
 import com.jev.probe.core.ChatGeometry
 import com.jev.probe.core.ChatHistory
 import com.jev.probe.core.ChatKind
+import com.jev.probe.core.ChatRel
 import com.jev.probe.core.ChatMood
 import com.jev.probe.core.Choice
 import com.jev.probe.core.ChatSnapshot
@@ -420,13 +421,16 @@ open class ChatCaptureService : AccessibilityService() {
             p.replyKey, p.replyBaseUrl
         )
         val group = snapshot.kind == ChatKind.GROUP
-        val rel = p.relationshipFor(lastChatKey, group)
+        val override = lastChatKey?.let { p.chatRelationship(it) }
+        val fallback = if (group) p.groupRelationship else p.relationship
+        val judgeRel = ChatRel.forJudge(override, fallback, group)
+        val voiceRel = ChatRel.forVoice(override, fallback, group)
         val prior = lastChatKey?.let { chatMood[it] }
         val chatKey = lastChatKey
         overlay?.chatKey = chatKey
         overlay?.priorAffect = prior?.affect
         submit {
-            val judgment = client.judge(snapshot, rel, MoodHint(priorAffect = prior?.affect))
+            val judgment = client.judge(snapshot, judgeRel, MoodHint(priorAffect = prior?.affect))
             val steer = if (judgment.error == null) DraftSteer.line(judgment, prior, group) else ""
             val rankHint = if (judgment.error == null) DraftSteer.rankHint(judgment, prior) else null
             val draftNow = judgment.error == null
@@ -449,7 +453,9 @@ open class ChatCaptureService : AccessibilityService() {
                 }
             }
             if (judgment.error != null || !draftNow) return@submit
-            val ranked = try { client.draftAndRank(snapshot, rel, rankHint, steer) } catch (_: Exception) { emptyList() }
+            val ranked = try {
+                client.draftAndRank(snapshot, judgeRel, rankHint, steer, voiceRel)
+            } catch (_: Exception) { emptyList() }
             main.post {
                 if (gen != generation) return@post
                 if (currentSnapshot?.signature() != sig) {

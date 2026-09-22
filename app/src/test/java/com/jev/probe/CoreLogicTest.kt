@@ -530,7 +530,11 @@ class AffectSteerTest {
         assertEquals(ChatRel.MAX, map.size)
         assertFalse(map.containsKey("k1"))
         assertEquals("v40", ChatRel.decode(ChatRel.encode(map))["k40"])
-        assertEquals("同事", ChatRel.labelOf(ChatRel.PRESETS.first { it.label == "同事" }.text))
+        assertEquals("同事", ChatRel.labelOf("同事"))
+        assertEquals("同事", ChatRel.labelOf("对方是同事。就事论事，短，不要情侣语气，不要过度热情。"))
+        assertTrue(ChatRel.forJudge("同事", "x", false).contains("Coworker"))
+        assertTrue(ChatRel.forVoice("伴侣", "x", false).contains("今晚说"))
+        assertTrue(ChatRel.forJudge(null, ChatRel.UNKNOWN_VOICE, false).contains("not set"))
         assertNull(ChatRel.labelOf("随便写的"))
     }
 }
@@ -545,9 +549,12 @@ class ReplyVoiceTest {
             Msg("me", "行")
         ))
         assertEquals(listOf("刚到", "你说", "行"), mine)
-        assertTrue(ReplyVoice.system(false).contains("不是客服"))
+        assertTrue(ReplyVoice.system(false).contains("我记着了"))
+        assertTrue(ReplyVoice.system(false).contains("我理解你的感受"))
         assertTrue(ReplyVoice.voiceBlock(emptyList()).contains("还没说过话"))
-        assertTrue(ReplyVoice.voiceBlock(listOf("嗯")).contains("嗯"))
+        val prompt = ReplyVoice.userPrompt(false, "对方是同事", listOf("嗯"), null, "", "对方：在吗")
+        assertTrue(prompt.contains("对方是同事"))
+        assertTrue(prompt.contains("· 嗯"))
     }
 }
 

@@ -690,10 +690,10 @@ class OverlayController(private val ctx: Context) {
             toast(toastText)
         }
         val row1 = chipRow(ChatRel.PRESETS.take(3), picked) { preset ->
-            choose(preset.text, "这段按${preset.label}")
+            choose(preset.label, "这段按${preset.label}")
         }
         val row2 = chipRow(ChatRel.PRESETS.drop(3), picked) { preset ->
-            choose(preset.text, "这段按${preset.label}")
+            choose(preset.label, "这段按${preset.label}")
         }
         val edit = EditText(ctx).apply {
             setText(if (picked == null) current.orEmpty() else "")

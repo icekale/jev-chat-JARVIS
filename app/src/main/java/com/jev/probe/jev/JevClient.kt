@@ -81,10 +81,11 @@ class JevClient(
         snapshot: ChatSnapshot,
         relationship: String,
         mood: MoodHint? = null,
-        steer: String? = null
+        steer: String? = null,
+        voice: String? = null
     ): List<RankedReply> {
         if (chatAuthKey().isBlank()) return emptyList()
-        val candidates = generateCandidates(snapshot, relationship, steer)
+        val candidates = generateCandidates(snapshot, voice ?: relationship, steer)
         val questions = JSONObject().put("best_reply",
             JevQuestions.rankQuestion(candidates, snapshot).getJSONObject("best_reply"))
         val body = JSONObject()
@@ -113,9 +114,8 @@ class JevClient(
             }
             "$who：${it.text}"
         }
-        val sys = ReplyVoice.system(snapshot.kind == ChatKind.GROUP) +
-            if (steer.isNullOrBlank()) "" else "若用户消息里有「语气」，三句都顺着那个情绪，但仍然用我自己的口气，不要改成讲道理。"
-        val kind = if (snapshot.kind == ChatKind.GROUP) "群聊" else "私聊"
+        val group = snapshot.kind == ChatKind.GROUP
+        val sys = ReplyVoice.system(group)
         val g = snapshot.group
         val extra = buildString {
             if (snapshot.mentionedMe) append("有人刚@我。")
@@ -126,9 +126,9 @@ class JevClient(
             if (!g?.watchHits.isNullOrEmpty()) append("命中关注词：${g!!.watchHits.joinToString("、")}。")
             if (!g?.speakers.isNullOrEmpty()) append("最近发言：${g!!.speakers.joinToString("、")}。")
         }
-        val tone = if (steer.isNullOrBlank()) "" else "语气：$steer\n\n"
-        val voice = ReplyVoice.voiceBlock(ReplyVoice.mine(snapshot.messages))
-        val user = "场景：$kind $extra\n关系：$relationship\n\n$voice\n\n${tone}最近对话：\n$convo\n\n请给出 3 条候选回复。"
+        val user = ReplyVoice.userPrompt(
+            group, relationship, ReplyVoice.mine(snapshot.messages), steer, extra, convo
+        )
         val messages = JSONArray()
             .put(JSONObject().put("role", "system").put("content", sys))
             .put(JSONObject().put("role", "user").put("content", user))
