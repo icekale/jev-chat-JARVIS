@@ -62,10 +62,10 @@
 
 ## 下载安装
 
-本仓库是 [Finderchangchang/jev-chat-JARVIS](https://github.com/Finderchangchang/jev-chat-JARVIS) 的公开 fork。当前发布版是 **v1.3.6**（versionCode 11，arm64-v8a，非 debuggable）：
+本仓库是 [Finderchangchang/jev-chat-JARVIS](https://github.com/Finderchangchang/jev-chat-JARVIS) 的公开 fork。当前发布版是 **v1.3.7**（versionCode 12，arm64-v8a，非 debuggable）：
 
-- [Releases · v1.3.6](https://github.com/icekale/jev-chat-JARVIS/releases/tag/v1.3.6)
-- 上一版 [v1.3.0](https://github.com/icekale/jev-chat-JARVIS/releases/tag/v1.3.0)
+- [Releases · v1.3.7](https://github.com/icekale/jev-chat-JARVIS/releases/tag/v1.3.7)
+- 上一版 [v1.3.6](https://github.com/icekale/jev-chat-JARVIS/releases/tag/v1.3.6)
 - 上游附带的旧包仍在 [`apk/jev-assistant-v1.0-release.apk`](apk/jev-assistant-v1.0-release.apk)
 
 ```bash
