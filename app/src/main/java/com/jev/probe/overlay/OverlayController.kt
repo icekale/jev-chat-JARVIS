@@ -53,7 +53,7 @@ class OverlayController(private val ctx: Context) {
     var onMarkAsMe: (() -> Unit)? = null
 
     /** Whether the overlay window is currently on screen. */
-    fun isShowing(): Boolean = root != null
+    fun isShowing(): Boolean = root?.isAttachedToWindow == true
 
     private var lastJudgment: Analysis? = null
     private var lastFill: ((String) -> Unit)? = null
@@ -83,7 +83,17 @@ class OverlayController(private val ctx: Context) {
     // ---------------------------------------------------------------- window
 
     private fun ensureRoot() {
-        if (root != null) return
+        val existing = root
+        if (existing != null) {
+            if (existing.isAttachedToWindow) return
+            root = null
+            bubble = null
+            panel = null
+            contentBox = null
+            dangerDot = null
+            bubbleMenu = null
+            expanded = false
+        }
         if (!canOverlay()) { android.util.Log.w("JEVASSIST", "overlay: canDrawOverlays=false"); return }
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,

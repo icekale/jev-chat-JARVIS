@@ -64,6 +64,7 @@ open class ChatCaptureService : AccessibilityService() {
 
     private val debounce = Runnable { runAnalysis() }
     private val captureSoon = Runnable { maybeCapture() }
+    private val shotWatch = Runnable { onShotTimeout() }
     private val heartbeat = object : Runnable {
         override fun run() {
             hideIfLeft()
@@ -124,6 +125,9 @@ open class ChatCaptureService : AccessibilityService() {
         val pkg = root?.packageName?.toString()
         recycleQuiet(root)
         if (pkg !in adapters && overlay?.isShowing() == true) overlay?.hide()
+        else if (pkg in adapters && overlay?.isShowing() != true && prefs?.enabled == true) {
+            scheduleCapture()
+        }
     }
 
     private fun maybeCapture() {
@@ -158,16 +162,17 @@ open class ChatCaptureService : AccessibilityService() {
             if (overlay?.isShowing() != true && held != null) overlay?.showIdle(held)
             return
         }
-        if (shotBusy) return
 
         val needsColor = pkg == WeChatAdapter.PKG && raw.recolorBounds.any { it != null }
-        if (!needsColor) {
-            publish(pkg, raw, textSig)
-            return
-        }
         val cache = lastShot?.takeUnless { it.isRecycled }
-        if (cache != null && System.currentTimeMillis() - lastShotAt < SHOT_TTL_MS) {
-            publish(pkg, paintFromShot(raw, cache), textSig)
+        val cacheFresh = cache != null && System.currentTimeMillis() - lastShotAt < SHOT_TTL_MS
+        if (!needsColor || !cacheFresh) {
+            // Show before any screenshot. A hung takeScreenshot must not hide the bubble.
+            publish(pkg, raw, textSig, analyze = !needsColor || cacheFresh)
+        }
+        if (!needsColor) return
+        if (cacheFresh && cache != null) {
+            publish(pkg, paintFromShot(raw, cache), textSig, analyze = true)
             return
         }
         pendingRaw = raw
@@ -179,6 +184,8 @@ open class ChatCaptureService : AccessibilityService() {
     private fun requestWeChatShot() {
         shotBusy = true
         val epoch = ++shotEpoch
+        main.removeCallbacks(shotWatch)
+        main.postDelayed(shotWatch, SHOT_TIMEOUT_MS)
         try {
             takeScreenshot(
                 Display.DEFAULT_DISPLAY,
@@ -197,13 +204,30 @@ open class ChatCaptureService : AccessibilityService() {
             )
         } catch (e: Exception) {
             shotBusy = false
+            main.removeCallbacks(shotWatch)
             Log.w(TAG, "screenshot threw", e)
             val raw = pendingRaw
             val pkg = pendingPkg
             val sig = pendingTextSig
             pendingRaw = null
-            if (raw != null && pkg != null && sig != null) publish(pkg, raw, sig)
+            pendingPkg = null
+            pendingTextSig = null
+            if (raw != null && pkg != null && sig != null) publish(pkg, raw, sig, analyze = true)
         }
+    }
+
+    private fun onShotTimeout() {
+        if (!shotBusy) return
+        Log.w(TAG, "screenshot timed out")
+        shotEpoch++
+        shotBusy = false
+        val raw = pendingRaw
+        val pkg = pendingPkg
+        val sig = pendingTextSig
+        pendingRaw = null
+        pendingPkg = null
+        pendingTextSig = null
+        if (raw != null && pkg != null && sig != null) publish(pkg, raw, sig, analyze = true)
     }
 
     private fun onShot(epoch: Int, bmp: Bitmap?) {
@@ -211,6 +235,7 @@ open class ChatCaptureService : AccessibilityService() {
             bmp?.takeUnless { it.isRecycled }?.recycle()
             return
         }
+        main.removeCallbacks(shotWatch)
         shotBusy = false
         if (bmp != null) {
             lastShot?.takeUnless { it.isRecycled }?.recycle()
@@ -225,7 +250,7 @@ open class ChatCaptureService : AccessibilityService() {
         pendingTextSig = null
         if (raw == null || pkg == null || sig == null) return
         val painted = if (bmp != null) paintFromShot(raw, bmp) else raw
-        publish(pkg, painted, sig)
+        publish(pkg, painted, sig, analyze = true)
     }
 
     private fun paintFromShot(raw: ChatSnapshot, bmp: Bitmap): ChatSnapshot {
@@ -264,7 +289,7 @@ open class ChatCaptureService : AccessibilityService() {
         }
     }
 
-    private fun publish(pkg: String, raw: ChatSnapshot, textSig: String) {
+    private fun publish(pkg: String, raw: ChatSnapshot, textSig: String, analyze: Boolean) {
         val p = prefs ?: return
         lastTextSig = textSig
         val key = ChatHistory.chatKey(pkg, raw.title)
@@ -292,6 +317,10 @@ open class ChatCaptureService : AccessibilityService() {
 
         currentSnapshot = snapshot
         val sig = snapshot.signature()
+        if (!analyze) {
+            overlay?.showIdle(snapshot)
+            return
+        }
         val showing = overlay?.isShowing() == true
         if (sig == lastSignature && showing) return
         if (sig == lastSignature && !showing) {
@@ -506,6 +535,7 @@ open class ChatCaptureService : AccessibilityService() {
         main.removeCallbacks(heartbeat)
         main.removeCallbacks(captureSoon)
         main.removeCallbacks(debounce)
+        main.removeCallbacks(shotWatch)
         overlay?.onManualAnalyze = null
         overlay?.onMarkAsMe = null
         overlay?.hide()
@@ -519,6 +549,7 @@ open class ChatCaptureService : AccessibilityService() {
         private const val TAG = "JEVASSIST"
         private const val THROTTLE_MS = 300L
         private const val SHOT_TTL_MS = 800L
+        private const val SHOT_TIMEOUT_MS = 2500L
         private const val SHOT_SCALE = 2
     }
 }
