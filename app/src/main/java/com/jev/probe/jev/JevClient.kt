@@ -5,6 +5,7 @@ import com.jev.probe.core.Analysis
 import com.jev.probe.core.ChatKind
 import com.jev.probe.core.ChatSnapshot
 import com.jev.probe.core.Choice
+import com.jev.probe.core.MoodHint
 import com.jev.probe.core.Prefs
 import com.jev.probe.core.RankedReply
 import com.jev.probe.core.Score
@@ -42,12 +43,12 @@ class JevClient(
     }
 
     /** The 7 judgment questions only (fast, ~1s). No candidate generation. */
-    fun judge(snapshot: ChatSnapshot, relationship: String): Analysis {
+    fun judge(snapshot: ChatSnapshot, relationship: String, mood: MoodHint? = null): Analysis {
         val start = System.currentTimeMillis()
         try {
             val body = JSONObject()
                 .put("model", jevModel)
-                .put("state", JevQuestions.buildState(snapshot, relationship))
+                .put("state", JevQuestions.buildState(snapshot, relationship, mood))
                 .put("questions", JevQuestions.judge(snapshot))
             val answers = postJson(decisionsUrl, body, key).optJSONObject("answers") ?: JSONObject()
             return Analysis(
@@ -64,7 +65,8 @@ class JevClient(
                 groupRegister = parseChoice(answers.optJSONObject("group_register")),
                 openLoop = answers.optJSONObject("open_loop")?.optDouble("noul"),
                 replyTarget = parseChoice(answers.optJSONObject("reply_target")),
-                threadStatus = parseChoice(answers.optJSONObject("thread_status"))
+                threadStatus = parseChoice(answers.optJSONObject("thread_status")),
+                affect = parseChoice(answers.optJSONObject("affect"))
             )
         } catch (e: Exception) {
             Log.w(TAG, "judge failed: ${e.message}")
@@ -74,14 +76,19 @@ class JevClient(
     }
 
     /** Draft 3 candidate replies (generative model) then Jev-rank them. Slower. */
-    fun draftAndRank(snapshot: ChatSnapshot, relationship: String): List<RankedReply> {
+    fun draftAndRank(
+        snapshot: ChatSnapshot,
+        relationship: String,
+        mood: MoodHint? = null,
+        steer: String? = null
+    ): List<RankedReply> {
         if (chatAuthKey().isBlank()) return emptyList()
-        val candidates = generateCandidates(snapshot, relationship)
+        val candidates = generateCandidates(snapshot, relationship, steer)
         val questions = JSONObject().put("best_reply",
             JevQuestions.rankQuestion(candidates, snapshot).getJSONObject("best_reply"))
         val body = JSONObject()
             .put("model", jevModel)
-            .put("state", JevQuestions.buildState(snapshot, relationship))
+            .put("state", JevQuestions.buildState(snapshot, relationship, mood))
             .put("questions", questions)
         val answers = postJson(decisionsUrl, body, key).optJSONObject("answers") ?: JSONObject()
         return parseRanked(answers.optJSONObject("best_reply"), candidates)
@@ -96,7 +103,7 @@ class JevClient(
     }
 
     /** Ask a generative model for exactly 3 varied candidate replies (Chinese). */
-    private fun generateCandidates(snapshot: ChatSnapshot, relationship: String): List<String> {
+    private fun generateCandidates(snapshot: ChatSnapshot, relationship: String, steer: String?): List<String> {
         val convo = snapshot.messages.takeLast(10).joinToString("\n") {
             val who = when {
                 it.side == "me" -> "我"
@@ -114,7 +121,7 @@ class JevClient(
             "你是中文即时通讯回复助手。只输出一个 JSON 数组，含且仅含 3 条候选回复文本，" +
                 "三条策略要有区别（例如：一条稳妥承接、一条给具体行动或承诺、一条简短低姿态）。" +
                 "每条不超过 40 字，口语、自然、像真人在聊天软件里发消息。不要解释，不要加引号以外的内容，直接输出 JSON 数组。"
-        }
+        } + if (steer.isNullOrBlank()) "" else "若用户消息里有「语气」，三条都必须顺着那个情绪，不要用玩笑或讲道理盖过去。"
         val kind = if (snapshot.kind == ChatKind.GROUP) "群聊" else "私聊"
         val g = snapshot.group
         val extra = buildString {
@@ -126,7 +133,8 @@ class JevClient(
             if (!g?.watchHits.isNullOrEmpty()) append("命中关注词：${g!!.watchHits.joinToString("、")}。")
             if (!g?.speakers.isNullOrEmpty()) append("最近发言：${g!!.speakers.joinToString("、")}。")
         }
-        val user = "场景：$kind $extra\n关系：$relationship\n\n最近对话：\n$convo\n\n请给出 3 条候选回复。"
+        val tone = if (steer.isNullOrBlank()) "" else "语气：$steer\n\n"
+        val user = "场景：$kind $extra\n关系：$relationship\n\n${tone}最近对话：\n$convo\n\n请给出 3 条候选回复。"
         val messages = JSONArray()
             .put(JSONObject().put("role", "system").put("content", sys))
             .put(JSONObject().put("role", "user").put("content", user))

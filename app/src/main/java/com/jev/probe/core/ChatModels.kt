@@ -50,7 +50,8 @@ data class Analysis(
     val groupRegister: Choice? = null,
     val openLoop: Double? = null,
     val replyTarget: Choice? = null,
-    val threadStatus: Choice? = null
+    val threadStatus: Choice? = null,
+    val affect: Choice? = null
 )
 
 data class Choice(val choice: String, val confidence: Double, val probabilities: Map<String, Double>)

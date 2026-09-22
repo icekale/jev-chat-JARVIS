@@ -95,6 +95,7 @@ class SettingsActivity : AppCompatActivity() {
         card2.addView(label("关系描述（给 Jev 判断用）"))
         val relEdit = edit(prefs.relationship, Prefs.DEFAULT_REL)
         card2.addView(relEdit)
+        card2.addView(text("悬浮窗里点「这段关系」可以只改当前聊天，不改这里的默认。群聊同理。", 12f, sub))
         card2.addView(label("会话白名单（每行一个关键词，空=所有会话）"))
         val wlEdit = edit(prefs.whitelist.joinToString("\n"), "留空则对所有会话生效").apply {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE; minLines = 2

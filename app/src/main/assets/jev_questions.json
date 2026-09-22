@@ -20,6 +20,20 @@
         "close_topic": "Peaceful wrap-up only: they accepted an apology, confirmed a happy plan, said thanks, or clearly signaled they need nothing more. Not a breakup, not 'don't contact me', not sarcastic 'I'm used to it'."
       }
     },
+    "affect": {
+      "type": "choice",
+      "instructions": "What is the other person's feeling in the latest message? This is emotion, not what they want and not the danger score. Weight the latest line, using the thread for tone. If state.prior_affect is set and state.prior_tension_open is true, and the latest line is short or flat (嗯, 哦, 好, 知道了, a single emoji) and does not clearly make peace, keep prior_affect. Do not switch to steady or teasing only because the new line is brief. Sarcastic 我习惯了 / 你忙你的 / 随便 / 无所谓 is cold or resigned, not steady. A real 没事了 / 过去了 / thanks after a fight is steady.",
+      "criteria": {
+        "steady": "Calm, practical, or neutral. No heat, no test, no cold shoulder.",
+        "affectionate": "Warm, close, or fond. They are being sweet or soft, not sarcastic.",
+        "teasing": "Playful joking with no real bite. A laugh is in the line, not a jab.",
+        "anxious": "Worried, rushed, or waiting. They want something handled, but they are not attacking you.",
+        "hurt": "Wounded or let down. They feel forgotten, unimportant, or unfairly treated, and the feeling is the point.",
+        "angry": "Mad, blaming, or raising their voice. Heat is aimed at you or the situation.",
+        "cold": "Short, distant, sarcastic, or shut down. 我习惯了 / 你忙你的 / 行吧 said without warmth.",
+        "resigned": "They have given up expecting you to care or fix it. Flat acceptance that is not peace, such as 算了 / 无所谓 / 随你."
+      }
+    },
     "danger_level": {
       "type": "score",
       "instructions": "How close is this conversation to a fight or to hurting the relationship? Match the current scene. If they genuinely accepted an apology or confirmed a happy plan, score the cooled-down present, not an earlier complaint. If an ultimatum (break up, report to the boss, stop covering for you) is still in force and has not been withdrawn, stay in that high bin even if the latest line names a specific task.",
@@ -97,6 +111,20 @@
         "joke": "Banter, a meme, or light chat with no task and no call-out.",
         "call_out": "They are criticizing you or putting you on the spot in front of others.",
         "off_topic": "Not directed at you and not needing your input."
+      }
+    },
+    "affect": {
+      "type": "choice",
+      "instructions": "What is the latest speaker's feeling in this GROUP message? Judge that person, not the mood of the whole room. This is emotion, not the task and not the danger score. If state.prior_affect is set and state.prior_tension_open is true, and the latest line is short or does not clearly make peace, keep prior_affect. Sarcasm and 随便 / 无所谓 are cold or resigned, not steady.",
+      "criteria": {
+        "steady": "Calm, practical, or neutral. No heat and no cold shoulder.",
+        "affectionate": "Warm or fond, such as family softness. Not sarcasm.",
+        "teasing": "Playful joking with no real bite.",
+        "anxious": "Worried, rushed, or waiting, without attacking someone.",
+        "hurt": "Wounded or let down. The feeling is the point.",
+        "angry": "Mad or blaming. Heat is aimed at someone in the group.",
+        "cold": "Short, distant, or sarcastic, without warmth.",
+        "resigned": "They have given up. Flat acceptance that is not peace."
       }
     },
     "danger_level": {
@@ -195,8 +223,8 @@
     }
   },
   "rank": {
-    "instructions": "Which candidate reply is the most appropriate next message, given the conversation and the other person's true need? Prefer a reply that matches the best action type. Penalize dismissive, over-promising, or off-topic replies. If the facts are not yet confirmed, prefer the candidate that looks them up instead of faking memory or a vague apology.",
-    "group_instructions": "Which candidate is the most appropriate NEXT message in this GROUP chat? Prefer a reply that matches best_action. Penalize couple-chat tone, long apologies, @everyone, answering when wait was correct, and inventing facts not in the snippet.",
+    "instructions": "Which candidate reply is the most appropriate next message, given the conversation and the other person's true need? Prefer a reply that matches the best action type. If judged_affect is hurt, angry, cold, or resigned, penalize jokes and lectures. If judged_affect is affectionate or teasing, penalize a stiff or cold reply. Penalize dismissive, over-promising, or off-topic replies. If the facts are not yet confirmed, prefer the candidate that looks them up instead of faking memory or a vague apology.",
+    "group_instructions": "Which candidate is the most appropriate NEXT message in this GROUP chat? Prefer a reply that matches best_action. If judged_affect is hurt, angry, cold, or resigned, penalize jokes. Penalize couple-chat tone, long apologies, @everyone, answering when wait was correct, and inventing facts not in the snippet.",
     "keys": [
       "reply_a",
       "reply_b",

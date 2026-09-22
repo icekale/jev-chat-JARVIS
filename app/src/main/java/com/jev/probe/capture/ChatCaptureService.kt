@@ -11,12 +11,17 @@ import android.util.Log
 import android.view.Display
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import com.jev.probe.core.Affect
 import com.jev.probe.core.CapturePace
 import com.jev.probe.core.ChatGeometry
 import com.jev.probe.core.ChatHistory
 import com.jev.probe.core.ChatKind
+import com.jev.probe.core.ChatMood
+import com.jev.probe.core.Choice
 import com.jev.probe.core.ChatSnapshot
+import com.jev.probe.core.DraftSteer
 import com.jev.probe.core.GroupChat
+import com.jev.probe.core.MoodHint
 import com.jev.probe.core.Msg
 import com.jev.probe.core.Prefs
 import com.jev.probe.jev.JevClient
@@ -60,6 +65,7 @@ open class ChatCaptureService : AccessibilityService() {
     private var pendingPkg: String? = null
     private var pendingTextSig: String? = null
     private val chatHistory = LinkedHashMap<String, List<Msg>>(16, 0.75f, true)
+    private val chatMood = LinkedHashMap<String, ChatMood>(16, 0.75f, true)
     private var lastChatKey: String? = null
 
     private val debounce = Runnable { runAnalysis() }
@@ -296,6 +302,8 @@ open class ChatCaptureService : AccessibilityService() {
         if (key != lastChatKey) {
             lastChatKey = key
             lastSignature = ""
+            overlay?.chatKey = key
+            overlay?.priorAffect = key?.let { chatMood[it]?.affect }
         }
         val prev = key?.let { chatHistory[it] }.orEmpty()
         val merged = ChatHistory.merge(prev, raw.messages)
@@ -403,24 +411,46 @@ open class ChatCaptureService : AccessibilityService() {
             p.openRouterKey, p.replyModel, p.jevProvider,
             p.replyKey, p.replyBaseUrl
         )
-        val rel = if (snapshot.kind == ChatKind.GROUP) p.groupRelationship else p.relationship
+        val group = snapshot.kind == ChatKind.GROUP
+        val rel = p.relationshipFor(lastChatKey, group)
+        val prior = lastChatKey?.let { chatMood[it] }
+        val chatKey = lastChatKey
+        overlay?.chatKey = chatKey
+        overlay?.priorAffect = prior?.affect
         submit {
-            val judgment = client.judge(snapshot, rel)
+            val judgment = client.judge(snapshot, rel, MoodHint(priorAffect = prior?.affect))
+            val steer = if (judgment.error == null) DraftSteer.line(judgment, prior, group) else ""
+            val rankHint = if (judgment.error == null) DraftSteer.rankHint(judgment, prior) else null
             main.post {
                 if (stale(gen, sig)) return@post
                 if (judgment.error != null) {
                     generation++
                     overlay?.showError(judgment.error)
-                } else overlay?.showJudgment(judgment)
+                } else {
+                    if (chatKey != null) rememberMood(chatKey, prior, judgment.affect, judgment.tensionResolved)
+                    overlay?.showJudgment(judgment)
+                }
             }
             if (judgment.error != null) return@submit
             if (stale(gen, sig)) return@submit
-            val ranked = try { client.draftAndRank(snapshot, rel) } catch (_: Exception) { emptyList() }
+            val ranked = try { client.draftAndRank(snapshot, rel, rankHint, steer) } catch (_: Exception) { emptyList() }
             main.post {
                 if (stale(gen, sig)) return@post
                 overlay?.showReplies(ranked) { text -> fillInput(text) }
             }
         }
+    }
+
+    private fun rememberMood(key: String, prior: ChatMood?, affect: Choice?, tension: Double?) {
+        val next = Affect.remember(prior, affect, tension)
+        if (next == null) chatMood.remove(key) else {
+            chatMood.remove(key)
+            chatMood[key] = next
+            while (chatMood.size > ChatHistory.MAX_CHATS) {
+                chatMood.remove(chatMood.keys.first())
+            }
+        }
+        overlay?.priorAffect = next?.affect
     }
 
     private fun stale(gen: Long, sig: String): Boolean =

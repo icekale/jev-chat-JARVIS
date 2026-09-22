@@ -13,16 +13,20 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.view.inputmethod.InputMethodManager
 import android.widget.Button
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import com.jev.probe.core.Affect
 import com.jev.probe.core.Analysis
 import com.jev.probe.core.ChatKind
 import com.jev.probe.core.ChatSnapshot
 import com.jev.probe.core.GroupChat
+import com.jev.probe.core.JudgeWords
 import com.jev.probe.core.Prefs
 import com.jev.probe.core.RankedReply
 import kotlin.math.abs
@@ -51,6 +55,8 @@ class OverlayController(private val ctx: Context) {
 
     var onManualAnalyze: (() -> Unit)? = null
     var onMarkAsMe: (() -> Unit)? = null
+    var chatKey: String? = null
+    var priorAffect: String? = null
 
     /** Whether the overlay window is currently on screen. */
     fun isShowing(): Boolean = root?.isAttachedToWindow == true
@@ -59,6 +65,7 @@ class OverlayController(private val ctx: Context) {
     private var lastFill: ((String) -> Unit)? = null
     private var bubbleMenu: View? = null
     private var lastSnapshot: ChatSnapshot? = null
+    private var editingRel = false
 
     private fun dp(v: Int) = TypedValue.applyDimension(
         TypedValue.COMPLEX_UNIT_DIP, v.toFloat(), ctx.resources.displayMetrics).roundToInt()
@@ -93,6 +100,7 @@ class OverlayController(private val ctx: Context) {
             dangerDot = null
             bubbleMenu = null
             expanded = false
+            editingRel = false
         }
         if (!canOverlay()) { android.util.Log.w("JEVASSIST", "overlay: canDrawOverlays=false"); return }
         val params = WindowManager.LayoutParams(
@@ -287,6 +295,7 @@ class OverlayController(private val ctx: Context) {
 
     fun showIdle(snapshot: ChatSnapshot) {
         lastSnapshot = snapshot
+        if (editingRel) return
         ensureRoot(); bubble?.alpha = 0.55f
         if (snapshot.kind == ChatKind.GROUP) lastJudgment = null
         else if (lastJudgment != null) return
@@ -314,6 +323,7 @@ class OverlayController(private val ctx: Context) {
             }
         }
         views.addAll(transcriptViews(snapshot, 5))
+        views.add(relationshipRow())
         views.add(markAsMeRow())
         val label = when {
             snapshot.kind == ChatKind.GROUP && snapshot.mentionedMe -> "有人@你 · 分析"
@@ -340,6 +350,10 @@ class OverlayController(private val ctx: Context) {
     }
 
     fun showLoading() {
+        if (editingRel) {
+            editingRel = false
+            setOverlayFocusable(false)
+        }
         ensureRoot(); bubble?.alpha = 1f
         setContent(listOf(hint("分析中…")))
         if (!expanded) toggle()
@@ -375,6 +389,7 @@ class OverlayController(private val ctx: Context) {
         runCatching { wm.removeView(r) }
         root = null; bubble = null; panel = null; contentBox = null; dangerDot = null
         bubbleMenu = null; expanded = false
+        editingRel = false
         lastJudgment = null; lastFill = null; lastSnapshot = null
     }
 
@@ -386,6 +401,7 @@ class OverlayController(private val ctx: Context) {
     }
 
     private fun render(a: Analysis, generating: Boolean) {
+        if (editingRel) return
         ensureRoot(); bubble?.alpha = 1f
         panel?.background = card(18, panelBg(), stroke = true) // re-apply in case opacity changed
         val views = ArrayList<View>()
@@ -405,6 +421,7 @@ class OverlayController(private val ctx: Context) {
             }
         }
         lastSnapshot?.let { views.addAll(transcriptViews(it, 3)) }
+        views.add(relationshipRow())
 
         // Danger badge — the alarm signal, up top and color-coded.
         a.dangerLevel?.let {
@@ -414,17 +431,25 @@ class OverlayController(private val ctx: Context) {
         }
         // Intent headline.
         a.trueIntent?.let {
-            val label = if (group) (GROUP_INTENT[it.choice] ?: INTENT[it.choice] ?: it.choice)
-            else (INTENT[it.choice] ?: it.choice)
+            val label = if (group) (JudgeWords.GROUP_INTENT[it.choice] ?: JudgeWords.INTENT[it.choice] ?: it.choice)
+            else (JudgeWords.INTENT[it.choice] ?: it.choice)
             views.add(line(if (group) "群里在做什么：$label" else "对方真实意图：$label", "#111827", 15f, true))
             views.add(hint("把握 ${(it.confidence * 100).roundToInt()}%"))
         }
+        val felt = Affect.usable(a.affect)
+        if (felt != null) {
+            views.add(line("对方情绪：${Affect.label(felt.choice)}", "#7C3AED", 14f, true))
+        } else if ((a.tensionResolved ?: 0.0) < Affect.COOL_TENSION) {
+            priorAffect?.takeIf { it in Affect.LABELS }?.let {
+                views.add(hint("情绪把握不够，先按上一轮的${Affect.label(it)}"))
+            }
+        }
         if (group) {
             a.groupRegister?.let {
-                views.add(hint("场合：${REGISTER[it.choice] ?: it.choice}"))
+                views.add(hint("场合：${JudgeWords.REGISTER[it.choice] ?: it.choice}"))
             }
             a.threadStatus?.let {
-                views.add(hint("线程：${THREAD[it.choice] ?: it.choice}"))
+                views.add(hint("线程：${JudgeWords.THREAD[it.choice] ?: it.choice}"))
             }
             a.addressedToMe?.let {
                 views.add(line(if (it >= 0.5) "这句是在叫你" else "这句不是在叫你", "#374151", 13f))
@@ -445,8 +470,8 @@ class OverlayController(private val ctx: Context) {
         }
         // Compact secondary line: needs · action · reply-now.
         val bits = ArrayList<String>()
-        val needsMap = if (group) GROUP_NEEDS else NEEDS
-        val actionMap = if (group) GROUP_ACTION else ACTION
+        val needsMap = if (group) JudgeWords.GROUP_NEEDS else JudgeWords.NEEDS
+        val actionMap = if (group) JudgeWords.GROUP_ACTION else JudgeWords.ACTION
         a.sheNeeds?.let { bits.add("要${(needsMap[it.choice] ?: it.choice)}") }
         a.bestAction?.let { bits.add(actionMap[it.choice] ?: it.choice) }
         a.shouldReplyNow?.let {
@@ -618,33 +643,94 @@ class OverlayController(private val ctx: Context) {
         else -> "安全"
     }
 
-    companion object {
-        private val INTENT = mapOf(
-            "confirm_you_care" to "确认你在不在乎", "vent_anger" to "在发泄情绪",
-            "request_action" to "要你办事", "seek_explanation" to "要个解释",
-            "casual_chat" to "随便聊聊", "close_topic" to "事情过去了")
-        private val NEEDS = mapOf(
-            "apology" to "道歉", "action" to "具体行动", "explanation" to "解释",
-            "care" to "你的在乎", "nothing" to "（不用做什么）")
-        private val ACTION = mapOf(
-            "check_history" to "翻聊天记录", "apologize" to "先道歉", "give_commitment" to "给承诺",
-            "explain" to "解释清楚", "acknowledge" to "接住情绪", "say_less" to "少说两句",
-            "make_plan" to "定个安排")
-        private val GROUP_INTENT = mapOf(
-            "ask_you" to "在问你", "assign_task" to "在派活", "coordinate" to "在协调",
-            "announce" to "在通知", "joke" to "闲聊/玩笑", "call_out" to "当众点你",
-            "off_topic" to "与你无关")
-        private val GROUP_NEEDS = mapOf(
-            "apology" to "你表态道歉", "action" to "你办事", "explanation" to "你解释",
-            "care" to "表态/在场", "nothing" to "不用你回")
-        private val GROUP_ACTION = mapOf(
-            "reply_brief" to "简短回一句", "give_fact" to "给具体信息", "volunteer" to "接下任务",
-            "wait" to "先别回", "clarify" to "先问清楚", "correct" to "礼貌纠正",
-            "deescalate" to "降温")
-        private val REGISTER = mapOf(
-            "work" to "工作", "family" to "家人", "friends" to "朋友", "mixed" to "混合")
-        private val THREAD = mapOf(
-            "new_topic" to "换话题了", "continue" to "还在同一件事",
-            "pile_on" to "几个人叠在一起", "resolved" to "已经收住")
+    private fun relationshipRow(): View {
+        val key = chatKey
+        val group = lastSnapshot?.kind == ChatKind.GROUP
+        val custom = key != null && prefs.chatRelationship(key) != null
+        val shown = prefs.relationshipFor(key, group).replace('\n', ' ')
+        val preview = if (shown.length > 26) shown.take(25) + "…" else shown
+        val text = if (custom) "这段关系：$preview" else "这段关系：默认 · $preview"
+        return TextView(ctx).apply {
+            this.text = text
+            textSize = 12f
+            setTextColor(Color.parseColor("#3A7AFE"))
+            setPadding(0, dp(4), 0, dp(2))
+            setOnClickListener { openRelEditor() }
+        }
+    }
+
+    private fun openRelEditor() {
+        val key = chatKey
+        if (key.isNullOrBlank()) {
+            toast("还没认出这个聊天")
+            return
+        }
+        editingRel = true
+        val group = lastSnapshot?.kind == ChatKind.GROUP
+        val edit = EditText(ctx).apply {
+            setText(prefs.relationshipFor(key, group))
+            setSelection(text.length)
+            hint = "只对这个聊天。留空恢复默认"
+            setHintTextColor(Color.parseColor("#9CA3AF"))
+            setTextColor(Color.parseColor("#111827"))
+            textSize = 13f
+            maxLines = 4
+            background = card(10, Color.parseColor("#F3F4F6"))
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+        }
+        val row = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(8), 0, 0)
+        }
+        row.addView(pill("记住", true) {
+            prefs.setChatRelationship(key, edit.text?.toString().orEmpty())
+            hideIme(edit)
+            val blank = edit.text.isNullOrBlank()
+            finishRelEdit()
+            toast(if (blank) "已恢复默认关系" else "已记住这段关系")
+        })
+        row.addView(pill("取消", false) {
+            hideIme(edit)
+            finishRelEdit()
+        })
+        setContent(listOf(
+            line("这段聊天的关系", "#111827", 14f, true),
+            hint("不改设置里的默认。留空就恢复默认。"),
+            edit,
+            row
+        ))
+        setOverlayFocusable(true)
+        edit.requestFocus()
+        edit.post {
+            val imm = ctx.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+            imm.showSoftInput(edit, InputMethodManager.SHOW_IMPLICIT)
+        }
+    }
+
+    private fun finishRelEdit() {
+        editingRel = false
+        setOverlayFocusable(false)
+        val a = lastJudgment
+        val snap = lastSnapshot
+        when {
+            a != null -> render(a, generating = false)
+            snap != null -> showIdle(snap)
+        }
+    }
+
+    private fun hideIme(v: View) {
+        val imm = ctx.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+        imm.hideSoftInputFromWindow(v.windowToken, 0)
+    }
+
+    private fun setOverlayFocusable(focusable: Boolean) {
+        val params = lp ?: return
+        val r = root ?: return
+        params.flags = if (focusable) {
+            params.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
+        } else {
+            params.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+        }
+        runCatching { wm.updateViewLayout(r, params) }
     }
 }

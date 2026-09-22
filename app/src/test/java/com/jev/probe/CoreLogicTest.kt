@@ -1,16 +1,23 @@
 package com.jev.probe
 
+import com.jev.probe.core.Affect
+import com.jev.probe.core.Analysis
 import com.jev.probe.core.BubbleBound
 import com.jev.probe.core.CapturePace
 import com.jev.probe.core.ChatGeometry
 import com.jev.probe.core.ChatHistory
 import com.jev.probe.core.ChatKind
+import com.jev.probe.core.ChatMood
+import com.jev.probe.core.ChatRel
 import com.jev.probe.core.ChatSnapshot
+import com.jev.probe.core.Choice
+import com.jev.probe.core.DraftSteer
 import com.jev.probe.core.GroupAuto
 import com.jev.probe.core.GroupChat
 import com.jev.probe.core.Msg
 import com.jev.probe.core.OemSettings
 import com.jev.probe.core.Prefs
+import com.jev.probe.core.Score
 import com.jev.probe.core.WeChatSkip
 import com.jev.probe.reply.ReplyParser
 import org.json.JSONArray
@@ -453,5 +460,73 @@ class WeChatSkipTest {
         assertTrue(WeChatSkip.isChatComposer(true, null, 2000, 2400))
         assertFalse(WeChatSkip.isChatComposer(true, null, 400, 2400))
         assertTrue(WeChatSkip.isChatComposer(false, "按住 说话", 2100, 2400))
+    }
+}
+
+class AffectSteerTest {
+    private fun analysis(
+        affect: Choice?,
+        tension: Double? = 0.2,
+        danger: Double = 1.0,
+        needs: String = "care",
+        action: String = "acknowledge"
+    ) = Analysis(
+        trueIntent = null,
+        dangerLevel = Score(danger, 0.9, 9),
+        sheNeeds = Choice(needs, 0.9, emptyMap()),
+        shouldReplyNow = null,
+        bestAction = Choice(action, 0.8, emptyMap()),
+        tensionResolved = tension,
+        literalQuestion = null,
+        rankedReplies = emptyList(),
+        latencyMs = 1,
+        affect = affect
+    )
+
+    @Test fun confidenceGateAndMemory() {
+        assertNull(Affect.usable(Choice("hurt", 0.4, emptyMap())))
+        assertNull(Affect.usable(Choice("nope", 0.9, emptyMap())))
+        assertEquals("hurt", Affect.usable(Choice("hurt", 0.8, emptyMap()))?.choice)
+        assertEquals("hurt", Affect.remember(ChatMood("angry"), Choice("hurt", 0.8, emptyMap()), 0.2)?.affect)
+        assertEquals("angry", Affect.remember(ChatMood("angry"), Choice("steady", 0.2, emptyMap()), 0.2)?.affect)
+        assertNull(Affect.remember(ChatMood("angry"), Choice("steady", 0.9, emptyMap()), 0.8))
+    }
+
+    @Test fun draftUsesConfidentAffectOrPrior() {
+        val sure = DraftSteer.line(analysis(Choice("hurt", 0.8, emptyMap())), ChatMood("angry"), false)
+        assertTrue(sure.contains("对方现在委屈"))
+        assertFalse(sure.contains("上一轮"))
+        assertTrue(sure.contains("不要开玩笑"))
+        val vague = DraftSteer.line(analysis(Choice("hurt", 0.2, emptyMap())), ChatMood("angry"), false)
+        assertFalse(vague.contains("委屈"))
+        assertTrue(vague.contains("上一轮还是生气"))
+        val cool = DraftSteer.line(
+            analysis(Choice("hurt", 0.2, emptyMap()), tension = 0.9, needs = "nothing", action = "say_less"),
+            ChatMood("angry"),
+            false
+        )
+        assertFalse(cool.contains("生气"))
+        assertFalse(cool.contains("不要开玩笑"))
+        assertTrue(cool.contains("不需要你多做"))
+    }
+
+    @Test fun rankHintDropsWeakAffect() {
+        val low = analysis(Choice("hurt", 0.2, emptyMap()))
+        val hint = DraftSteer.rankHint(low, ChatMood("cold"))
+        assertNull(hint.judgedAffect)
+        assertEquals("cold", hint.priorAffect)
+        val high = DraftSteer.rankHint(analysis(Choice("hurt", 0.9, emptyMap())), ChatMood("cold"))
+        assertEquals("hurt", high.judgedAffect)
+        assertNull(high.priorAffect)
+    }
+
+    @Test fun perChatRelationshipCap() {
+        var map = ChatRel.put(emptyMap(), "a", "同事")
+        assertEquals("同事", map["a"])
+        assertFalse(ChatRel.put(map, "a", "  ").containsKey("a"))
+        for (i in 1..40) map = ChatRel.put(map, "k$i", "v$i")
+        assertEquals(ChatRel.MAX, map.size)
+        assertFalse(map.containsKey("k1"))
+        assertEquals("v40", ChatRel.decode(ChatRel.encode(map))["k40"])
     }
 }

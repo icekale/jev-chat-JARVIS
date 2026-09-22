@@ -95,6 +95,21 @@ class Prefs(context: Context) {
         get() = sp.getStringSet(K_NICKS, emptySet()) ?: emptySet()
         set(v) = sp.edit().putStringSet(K_NICKS, v).apply()
 
+    /** Per-chat relationship, else the DM or group default. */
+    fun relationshipFor(chatKey: String?, group: Boolean): String {
+        val custom = chatKey?.let { chatRelationship(it) }
+        if (!custom.isNullOrBlank()) return custom
+        return if (group) groupRelationship else relationship
+    }
+
+    fun chatRelationship(chatKey: String): String? =
+        ChatRel.decode(sp.getString(K_CHAT_REL, null))[chatKey]
+
+    fun setChatRelationship(chatKey: String, text: String) {
+        val next = ChatRel.put(ChatRel.decode(sp.getString(K_CHAT_REL, null)), chatKey, text)
+        sp.edit().putString(K_CHAT_REL, ChatRel.encode(next)).commit()
+    }
+
     /** Relationship text used only for group-chat Jev state. */
     var groupRelationship: String
         get() = sp.getString(K_GROUP_REL, DEFAULT_GROUP_REL) ?: DEFAULT_GROUP_REL
@@ -145,6 +160,7 @@ class Prefs(context: Context) {
         private const val K_GROUP_AUTO = "group_auto"
         private const val K_NICKS = "my_nicknames"
         private const val K_GROUP_REL = "group_relationship"
+        private const val K_CHAT_REL = "chat_relationship"
         private const val K_WATCH = "group_watch"
         private const val K_DIGEST = "group_digest"
         private const val K_AT_FILL = "group_at_fill"

@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import com.jev.probe.core.ChatKind
 import com.jev.probe.core.ChatSnapshot
+import com.jev.probe.core.MoodHint
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -54,7 +55,7 @@ object JevQuestions {
         return JSONObject((src ?: error("JevQuestions not initialized")).toString())
     }
 
-    fun buildState(snapshot: ChatSnapshot, relationship: String): JSONObject {
+    fun buildState(snapshot: ChatSnapshot, relationship: String, mood: MoodHint? = null): JSONObject {
         val msgs = JSONArray()
         val last10 = snapshot.messages.takeLast(10)
         for (m in last10) {
@@ -80,6 +81,14 @@ object JevQuestions {
             g.openAsk?.let { chat.put("open_ask", it) }
             g.openAskSpeaker?.let { chat.put("open_ask_speaker", it) }
         }
+        mood?.priorAffect?.let {
+            chat.put("prior_affect", it)
+            chat.put("prior_tension_open", true)
+        }
+        mood?.judgedAffect?.let { chat.put("judged_affect", it) }
+        mood?.sheNeeds?.let { chat.put("she_needs", it) }
+        mood?.bestAction?.let { chat.put("best_action", it) }
+        mood?.danger?.let { chat.put("danger_level", it) }
         return JSONObject().put("chat", chat)
     }
 
