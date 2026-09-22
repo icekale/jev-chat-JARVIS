@@ -23,6 +23,7 @@ import com.jev.probe.core.DraftSteer
 import com.jev.probe.core.GroupChat
 import com.jev.probe.core.MoodHint
 import com.jev.probe.core.Msg
+import com.jev.probe.core.PanelCue
 import com.jev.probe.core.Prefs
 import com.jev.probe.jev.JevClient
 import com.jev.probe.overlay.OverlayController
@@ -68,7 +69,12 @@ open class ChatCaptureService : AccessibilityService() {
     private val chatMood = LinkedHashMap<String, ChatMood>(16, 0.75f, true)
     private var lastChatKey: String? = null
 
-    private val debounce = Runnable { runAnalysis() }
+    private val debounce = Runnable { runAnalysis(false) }
+    private var readySnapshot: ChatSnapshot? = null
+    private var readyRel: String = ""
+    private var readyHint: MoodHint? = null
+    private var readySteer: String = ""
+    private var readySig: String = ""
     private val captureSoon = Runnable { maybeCapture() }
     private val shotWatch = Runnable { onShotTimeout() }
     private val heartbeat = object : Runnable {
@@ -88,8 +94,9 @@ open class ChatCaptureService : AccessibilityService() {
         if (prefs == null) prefs = Prefs(this)
         overlay = OverlayController(this)
         overlay?.onManualAnalyze = {
-            currentSnapshot?.let { pendingSnapshot = it; runAnalysis() }
+            currentSnapshot?.let { pendingSnapshot = it; runAnalysis(true) }
         }
+        overlay?.onNeedReplies = { draftReady() }
         overlay?.onMarkAsMe = { markLatestAsMe() }
         runCatching { KeepAliveService.start(this) }
         main.removeCallbacks(heartbeat)
@@ -304,6 +311,7 @@ open class ChatCaptureService : AccessibilityService() {
             lastSignature = ""
             overlay?.chatKey = key
             overlay?.priorAffect = key?.let { chatMood[it]?.affect }
+            readySnapshot = null
         }
         val prev = key?.let { chatHistory[it] }.orEmpty()
         val merged = ChatHistory.merge(prev, raw.messages)
@@ -395,7 +403,7 @@ open class ChatCaptureService : AccessibilityService() {
         overlay?.toast(if (savedColor) "已记成我的发言，并记住气泡颜色" else "已记成我的发言")
     }
 
-    private fun runAnalysis() {
+    private fun runAnalysis(wantReplies: Boolean) {
         val snapshot = pendingSnapshot ?: return
         val p = prefs ?: return
         if (snapshot.group?.moneyRelated == true) {
@@ -405,8 +413,9 @@ open class ChatCaptureService : AccessibilityService() {
         if (!p.hasKey()) { overlay?.showError("未设置接口密钥，去设置里填"); return }
         val gen = ++generation
         val sig = snapshot.signature()
+        readySnapshot = null
         overlay?.bindSnapshot(snapshot)
-        overlay?.showLoading()
+        overlay?.showBusy()
         val client = JevClient(
             p.openRouterKey, p.replyModel, p.jevProvider,
             p.replyKey, p.replyBaseUrl
@@ -421,21 +430,71 @@ open class ChatCaptureService : AccessibilityService() {
             val judgment = client.judge(snapshot, rel, MoodHint(priorAffect = prior?.affect))
             val steer = if (judgment.error == null) DraftSteer.line(judgment, prior, group) else ""
             val rankHint = if (judgment.error == null) DraftSteer.rankHint(judgment, prior) else null
+            val draftNow = judgment.error == null && (wantReplies || PanelCue.shouldAutoOpen(judgment))
+            if (stale(gen, sig)) {
+                main.post { if (gen == generation) overlay?.stopBusy() }
+                return@submit
+            }
             main.post {
-                if (stale(gen, sig)) return@post
+                if (gen != generation) return@post
+                if (currentSnapshot?.signature() != sig) {
+                    overlay?.stopBusy()
+                    return@post
+                }
                 if (judgment.error != null) {
                     generation++
                     overlay?.showError(judgment.error)
                 } else {
                     if (chatKey != null) rememberMood(chatKey, prior, judgment.affect, judgment.tensionResolved)
-                    overlay?.showJudgment(judgment)
+                    overlay?.onJudged(judgment, drafting = draftNow)
+                    if (!draftNow) {
+                        readySnapshot = snapshot
+                        readyRel = rel
+                        readyHint = rankHint
+                        readySteer = steer
+                        readySig = sig
+                    }
                 }
             }
-            if (judgment.error != null) return@submit
-            if (stale(gen, sig)) return@submit
+            if (judgment.error != null || !draftNow) return@submit
             val ranked = try { client.draftAndRank(snapshot, rel, rankHint, steer) } catch (_: Exception) { emptyList() }
             main.post {
-                if (stale(gen, sig)) return@post
+                if (gen != generation) return@post
+                if (currentSnapshot?.signature() != sig) {
+                    overlay?.stopBusy()
+                    return@post
+                }
+                overlay?.showReplies(ranked) { text -> fillInput(text) }
+            }
+        }
+    }
+
+    /** Quiet judgments skip the draft until the bubble is opened. */
+    private fun draftReady() {
+        val snapshot = readySnapshot ?: run {
+            currentSnapshot?.let { pendingSnapshot = it; runAnalysis(true) }
+            return
+        }
+        val p = prefs ?: return
+        if (!p.hasKey()) { overlay?.showError("未设置接口密钥，去设置里填"); return }
+        val gen = ++generation
+        val sig = readySig
+        val rel = readyRel
+        val hint = readyHint
+        val steer = readySteer
+        overlay?.showBusy()
+        val client = JevClient(
+            p.openRouterKey, p.replyModel, p.jevProvider,
+            p.replyKey, p.replyBaseUrl
+        )
+        submit {
+            val ranked = try { client.draftAndRank(snapshot, rel, hint, steer) } catch (_: Exception) { emptyList() }
+            main.post {
+                if (gen != generation) return@post
+                if (currentSnapshot?.signature() != sig) {
+                    overlay?.stopBusy()
+                    return@post
+                }
                 overlay?.showReplies(ranked) { text -> fillInput(text) }
             }
         }
@@ -567,6 +626,7 @@ open class ChatCaptureService : AccessibilityService() {
         main.removeCallbacks(debounce)
         main.removeCallbacks(shotWatch)
         overlay?.onManualAnalyze = null
+        overlay?.onNeedReplies = null
         overlay?.onMarkAsMe = null
         overlay?.hide()
         overlay = null

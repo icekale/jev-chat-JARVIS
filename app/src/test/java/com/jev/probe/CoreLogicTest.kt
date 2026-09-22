@@ -16,6 +16,7 @@ import com.jev.probe.core.GroupAuto
 import com.jev.probe.core.GroupChat
 import com.jev.probe.core.Msg
 import com.jev.probe.core.OemSettings
+import com.jev.probe.core.PanelCue
 import com.jev.probe.core.Prefs
 import com.jev.probe.core.Score
 import com.jev.probe.core.WeChatSkip
@@ -528,5 +529,39 @@ class AffectSteerTest {
         assertEquals(ChatRel.MAX, map.size)
         assertFalse(map.containsKey("k1"))
         assertEquals("v40", ChatRel.decode(ChatRel.encode(map))["k40"])
+    }
+}
+
+class PanelCueTest {
+    private fun analysis(danger: Double, replyNow: Double?, affect: String? = null) = Analysis(
+        trueIntent = null,
+        dangerLevel = Score(danger, 0.9, 9),
+        sheNeeds = null,
+        shouldReplyNow = replyNow,
+        bestAction = Choice("acknowledge", 0.8, emptyMap()),
+        tensionResolved = 0.2,
+        literalQuestion = null,
+        rankedReplies = emptyList(),
+        latencyMs = 1,
+        affect = affect?.let { Choice(it, 0.9, emptyMap()) }
+    )
+
+    @Test fun autoOpenOnlyWhenItMatters() {
+        assertFalse(PanelCue.shouldAutoOpen(analysis(2.0, 0.2)))
+        assertTrue(PanelCue.shouldAutoOpen(analysis(6.0, 0.1)))
+        assertTrue(PanelCue.shouldAutoOpen(analysis(1.0, 0.6)))
+        assertFalse(PanelCue.shouldAutoOpen(analysis(1.0, null)))
+    }
+
+    @Test fun bubbleAndSummary() {
+        val hurt = analysis(2.0, 0.2, "hurt")
+        assertEquals(PanelCue.Tone.HOT, PanelCue.tone(hurt, null))
+        assertEquals("委屈", PanelCue.bubbleText(false, false, hurt, null))
+        assertEquals("@", PanelCue.bubbleText(true, true, null, null))
+        assertEquals("!", PanelCue.bubbleText(false, true, null, null))
+        assertEquals("委屈 · 接住情绪 · 先别给实质", PanelCue.summary(hurt, null, false))
+        assertEquals(PanelCue.Tone.WATCH, PanelCue.tone(analysis(4.0, 0.2), null))
+        assertEquals(PanelCue.Tone.DANGER, PanelCue.tone(analysis(8.0, 0.2), null))
+        assertEquals(PanelCue.Tone.SAFE, PanelCue.tone(analysis(1.0, 0.2), null))
     }
 }

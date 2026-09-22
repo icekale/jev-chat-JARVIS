@@ -21,12 +21,11 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
-import com.jev.probe.core.Affect
 import com.jev.probe.core.Analysis
 import com.jev.probe.core.ChatKind
 import com.jev.probe.core.ChatSnapshot
 import com.jev.probe.core.GroupChat
-import com.jev.probe.core.JudgeWords
+import com.jev.probe.core.PanelCue
 import com.jev.probe.core.Prefs
 import com.jev.probe.core.RankedReply
 import kotlin.math.abs
@@ -47,13 +46,13 @@ class OverlayController(private val ctx: Context) {
     private val prefs = Prefs(ctx)
     private var root: FrameLayout? = null
     private var bubble: TextView? = null
-    private var dangerDot: View? = null
     private var panel: LinearLayout? = null
     private var contentBox: LinearLayout? = null
     private var expanded = false
     private var lp: WindowManager.LayoutParams? = null
 
     var onManualAnalyze: (() -> Unit)? = null
+    var onNeedReplies: (() -> Unit)? = null
     var onMarkAsMe: (() -> Unit)? = null
     var chatKey: String? = null
     var priorAffect: String? = null
@@ -66,6 +65,7 @@ class OverlayController(private val ctx: Context) {
     private var bubbleMenu: View? = null
     private var lastSnapshot: ChatSnapshot? = null
     private var editingRel = false
+    private var busy = false
 
     private fun dp(v: Int) = TypedValue.applyDimension(
         TypedValue.COMPLEX_UNIT_DIP, v.toFloat(), ctx.resources.displayMetrics).roundToInt()
@@ -97,7 +97,6 @@ class OverlayController(private val ctx: Context) {
             bubble = null
             panel = null
             contentBox = null
-            dangerDot = null
             bubbleMenu = null
             expanded = false
             editingRel = false
@@ -143,16 +142,9 @@ class OverlayController(private val ctx: Context) {
             }
             layoutParams = FrameLayout.LayoutParams(dp(52), dp(52))
         }
-        val dot = View(ctx).apply {
-            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.TRANSPARENT) }
-            layoutParams = FrameLayout.LayoutParams(dp(12), dp(12)).apply {
-                gravity = Gravity.TOP or Gravity.END
-            }
-        }
         wrap.addView(b)
-        wrap.addView(dot)
         attachBubbleTouch(wrap, params)
-        bubble = b; dangerDot = dot
+        bubble = b
         return wrap
     }
 
@@ -230,7 +222,7 @@ class OverlayController(private val ctx: Context) {
                     if (longFired) { true }
                     else if (moved) {
                         prefs.bubbleX = params.x; prefs.bubbleY = params.y; true  // stays where dropped
-                    } else { toggle(); true }
+                    } else { onBubbleTap(); true }
                 }
                 MotionEvent.ACTION_CANCEL -> { v.removeCallbacks(longPress); true }
                 else -> false
@@ -250,8 +242,12 @@ class OverlayController(private val ctx: Context) {
             background = card(12, panelBg(), stroke = true)
             elevation = dp(8).toFloat()
             setPadding(dp(4), dp(4), dp(4), dp(4))
-            layoutParams = FrameLayout.LayoutParams(dp(150), ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(56) }
+            layoutParams = FrameLayout.LayoutParams(dp(188), ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(56) }
         }
+        menu.addView(menuItem("读到的记录") { dismissMenu(); showTranscript() })
+        menu.addView(menuItem("这段关系") { dismissMenu(); openRelEditor() })
+        menu.addView(menuItem("最新这条是我说的") { dismissMenu(); onMarkAsMe?.invoke() })
+        menu.addView(menuItem("重新分析") { dismissMenu(); onManualAnalyze?.invoke() })
         menu.addView(menuItem("打开设置") { openSettings(); dismissMenu() })
         menu.addView(menuItem("隐藏助手（本次）") { hide() })
         menu.addView(menuItem("取消") { dismissMenu() })
@@ -294,88 +290,84 @@ class OverlayController(private val ctx: Context) {
     // ------------------------------------------------------------ public API
 
     fun showIdle(snapshot: ChatSnapshot) {
+        val changed = snapshot.signature() != lastSnapshot?.signature()
         lastSnapshot = snapshot
-        if (editingRel) return
-        ensureRoot(); bubble?.alpha = 0.55f
-        if (snapshot.kind == ChatKind.GROUP) lastJudgment = null
-        else if (lastJudgment != null) return
-        val views = ArrayList<View>()
-        if (snapshot.kind == ChatKind.GROUP) {
-            val title = GroupChat.displayTitle(snapshot.title)
-            val head = buildString {
-                append("群聊 · ").append(title)
-                snapshot.memberCount?.let { append(" · ").append(it).append("人") }
-            }
-            views.add(line(head, "#6B7280", 12f, true))
-            val g = snapshot.group
-            if (prefs.groupDigest && g != null && g.digest.isNotBlank()) {
-                views.add(line(g.digest, "#111827", 13f))
-            }
-            if (g?.moneyRelated == true) {
-                views.add(hint("涉及红包/转账，已跳过（不碰钱）"))
-                views.addAll(transcriptViews(snapshot, 4))
-                setContent(views)
-                return
-            }
-        } else {
-            snapshot.title?.takeIf { it.isNotBlank() }?.let {
-                views.add(line(it, "#6B7280", 12f, true))
-            }
+        if (editingRel || busy) return
+        ensureRoot()
+        if (snapshot.kind == ChatKind.GROUP && changed) {
+            lastJudgment = null
+            if (expanded) toggle()
         }
-        views.addAll(transcriptViews(snapshot, 5))
-        views.add(relationshipRow())
-        views.add(markAsMeRow())
-        val label = when {
-            snapshot.kind == ChatKind.GROUP && snapshot.mentionedMe -> "有人@你 · 分析"
-            snapshot.group?.relevantNow == true -> "与你有关 · 分析"
-            snapshot.kind == ChatKind.GROUP -> "群聊 · 点此分析"
-            else -> "分析当前对话"
-        }
-        views.add(bigButton(label) { onManualAnalyze?.invoke() })
-        setContent(views)
+        if (lastJudgment == null) paintBubble(null)
     }
 
-    private fun bigButton(label: String, onClick: () -> Unit) = TextView(ctx).apply {
-        text = label; textSize = 14f; gravity = Gravity.CENTER
-        setTextColor(Color.WHITE); setTypeface(typeface, Typeface.BOLD)
-        background = card(12, Color.parseColor("#3A7AFE"))
-        setPadding(dp(12), dp(11), dp(12), dp(11))
-        layoutParams = LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-        setOnClickListener { onClick() }
+    private fun onBubbleTap() {
+        dismissMenu()
+        if (editingRel) {
+            finishRelEdit()
+            return
+        }
+        if (busy) return
+        if (expanded) {
+            toggle()
+            return
+        }
+        val a = lastJudgment
+        when {
+            a == null -> onManualAnalyze?.invoke()
+            a.rankedReplies.isEmpty() -> onNeedReplies?.invoke()
+            else -> toggle()
+        }
     }
 
     fun bindSnapshot(snapshot: ChatSnapshot) {
         lastSnapshot = snapshot
     }
 
-    fun showLoading() {
+    /** Bubble only. The chat stays visible until replies are ready. */
+    fun showBusy() {
         if (editingRel) {
             editingRel = false
             setOverlayFocusable(false)
         }
-        ensureRoot(); bubble?.alpha = 1f
-        setContent(listOf(hint("分析中…")))
-        if (!expanded) toggle()
+        busy = true
+        ensureRoot()
+        if (expanded) toggle()
+        paintBubble(lastJudgment)
     }
 
     fun showError(msg: String) {
-        ensureRoot(); bubble?.alpha = 1f
+        busy = false
+        ensureRoot()
+        paintBubble(null)
         setContent(listOf(
             line("出错了", "#DC2626", 14f, true),
             hint(msg)))
+        if (!expanded) toggle()
     }
 
-    fun showJudgment(a: Analysis) {
+    /** Judgment is in. [drafting] keeps the bubble spinning and the panel shut. */
+    fun onJudged(a: Analysis, drafting: Boolean) {
         lastJudgment = a
-        render(a, generating = true)
+        busy = drafting
+        ensureRoot()
+        paintBubble(a)
+        if (expanded) toggle()
+    }
+
+    fun stopBusy() {
+        busy = false
+        paintBubble(lastJudgment)
     }
 
     fun showReplies(ranked: List<RankedReply>, onFill: (String) -> Unit) {
+        busy = false
         lastFill = onFill
         val a = lastJudgment?.copy(rankedReplies = ranked) ?: return
         lastJudgment = a
-        render(a, generating = false)
+        ensureRoot()
+        paintBubble(a)
+        renderReplyPanel(a)
     }
 
     fun toast(msg: String) = Toast.makeText(ctx, msg, Toast.LENGTH_SHORT).show()
@@ -387,9 +379,10 @@ class OverlayController(private val ctx: Context) {
     fun hide() {
         val r = root ?: return
         runCatching { wm.removeView(r) }
-        root = null; bubble = null; panel = null; contentBox = null; dangerDot = null
+        root = null; bubble = null; panel = null; contentBox = null
         bubbleMenu = null; expanded = false
         editingRel = false
+        busy = false
         lastJudgment = null; lastFill = null; lastSnapshot = null
     }
 
@@ -400,153 +393,75 @@ class OverlayController(private val ctx: Context) {
         c.removeAllViews(); views.forEach { c.addView(it) }
     }
 
-    private fun render(a: Analysis, generating: Boolean) {
+    private fun renderReplyPanel(a: Analysis) {
         if (editingRel) return
-        ensureRoot(); bubble?.alpha = 1f
-        panel?.background = card(18, panelBg(), stroke = true) // re-apply in case opacity changed
-        val views = ArrayList<View>()
+        panel?.background = card(18, panelBg(), stroke = true)
         val group = lastSnapshot?.kind == ChatKind.GROUP
-
-        if (group) {
-            val title = GroupChat.displayTitle(lastSnapshot?.title)
-            val who = lastSnapshot?.latestSpeaker
-            val bits0 = ArrayList<String>()
-            bits0.add("群聊 · $title")
-            lastSnapshot?.memberCount?.let { bits0.add("${it}人") }
-            if (lastSnapshot?.mentionedMe == true) bits0.add("@你")
-            if (!who.isNullOrBlank()) bits0.add("最新 $who")
-            views.add(line(bits0.joinToString("  ·  "), "#6B7280", 12f, true))
-            lastSnapshot?.group?.digest?.takeIf { it.isNotBlank() }?.let {
-                views.add(hint(it))
-            }
-        }
-        lastSnapshot?.let { views.addAll(transcriptViews(it, 3)) }
-        views.add(relationshipRow())
-
-        // Danger badge — the alarm signal, up top and color-coded.
-        a.dangerLevel?.let {
-            val lvl = it.score.roundToInt()
-            views.add(dangerBadge(lvl, it.maxLevel))
-            tintBubbleDanger(it.score)
-        }
-        // Intent headline.
-        a.trueIntent?.let {
-            val label = if (group) (JudgeWords.GROUP_INTENT[it.choice] ?: JudgeWords.INTENT[it.choice] ?: it.choice)
-            else (JudgeWords.INTENT[it.choice] ?: it.choice)
-            views.add(line(if (group) "群里在做什么：$label" else "对方真实意图：$label", "#111827", 15f, true))
-            views.add(hint("把握 ${(it.confidence * 100).roundToInt()}%"))
-        }
-        val felt = Affect.usable(a.affect)
-        if (felt != null) {
-            views.add(line("对方情绪：${Affect.label(felt.choice)}", "#7C3AED", 14f, true))
-        } else if ((a.tensionResolved ?: 0.0) < Affect.COOL_TENSION) {
-            priorAffect?.takeIf { it in Affect.LABELS }?.let {
-                views.add(hint("情绪把握不够，先按上一轮的${Affect.label(it)}"))
-            }
-        }
-        if (group) {
-            a.groupRegister?.let {
-                views.add(hint("场合：${JudgeWords.REGISTER[it.choice] ?: it.choice}"))
-            }
-            a.threadStatus?.let {
-                views.add(hint("线程：${JudgeWords.THREAD[it.choice] ?: it.choice}"))
-            }
-            a.addressedToMe?.let {
-                views.add(line(if (it >= 0.5) "这句是在叫你" else "这句不是在叫你", "#374151", 13f))
-            }
-            a.openLoop?.let {
-                if (it >= 0.5) views.add(line("还有没回的问题", "#D97706", 13f, true))
-            }
-            a.replyTarget?.let {
-                val who = when (it.choice) {
-                    "latest_speaker" -> lastSnapshot?.latestSpeaker?.let { n -> "该回 $n" }
-                    "earlier_asker" -> lastSnapshot?.group?.openAskSpeaker?.let { n -> "该回 $n（前面的问）" }
-                    "whole_group" -> "对全群说一句即可"
-                    "nobody" -> "不用点名"
-                    else -> null
-                }
-                if (who != null) views.add(line(who, "#3A7AFE", 13f, true))
-            }
-        }
-        // Compact secondary line: needs · action · reply-now.
-        val bits = ArrayList<String>()
-        val needsMap = if (group) JudgeWords.GROUP_NEEDS else JudgeWords.NEEDS
-        val actionMap = if (group) JudgeWords.GROUP_ACTION else JudgeWords.ACTION
-        a.sheNeeds?.let { bits.add("要${(needsMap[it.choice] ?: it.choice)}") }
-        a.bestAction?.let { bits.add(actionMap[it.choice] ?: it.choice) }
-        a.shouldReplyNow?.let {
-            bits.add(
-                if (group) (if (it >= 0.5) "该回" else "先别回")
-                else (if (it >= 0.5) "可给实质" else "先别给实质")
-            )
-        }
-        if (bits.isNotEmpty()) views.add(line(bits.joinToString("  ·  "), "#374151", 13f))
-        a.tensionResolved?.let { if (it >= 0.7) views.add(line("✓ 紧张已缓解", "#16A34A", 12f)) }
-
-        views.add(divider())
-        views.add(line("候选回复（Jev 排序）", "#9CA3AF", 12f))
-        if (generating) {
-            views.add(hint("生成中…"))
+        val views = ArrayList<View>()
+        views.add(line(PanelCue.summary(a, priorAffect, group), "#111827", 15f, true))
+        views.add(hint("点一句填入，长按复制"))
+        val fill = lastFill ?: {}
+        if (a.rankedReplies.isEmpty()) {
+            views.add(hint("（未生成候选回复）"))
         } else {
-            val fill = lastFill ?: {}
             a.rankedReplies.forEachIndexed { i, r ->
-                views.add(replyCard(i + 1, r.text, (r.prob * 100).roundToInt()) { raw ->
+                views.add(replyCard(i == 0, r.text) { raw ->
                     fill(decorateFill(raw))
+                    if (expanded) toggle()
                 })
             }
-            if (a.rankedReplies.isEmpty()) views.add(hint("（未生成候选回复）"))
         }
-        views.add(reAnalyzeBtn())
-        views.add(markAsMeRow())
-
         setContent(views)
         if (!expanded) toggle()
     }
 
-    private fun dangerBadge(lvl: Int, max: Int): View {
-        val color = dangerColor(lvl)
-        val row = LinearLayout(ctx).apply {
-            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, 0, 0, dp(6))
-        }
-        row.addView(TextView(ctx).apply {
-            text = "危险 $lvl/$max"
-            setTextColor(Color.WHITE); textSize = 13f; setTypeface(typeface, Typeface.BOLD)
-            setPadding(dp(10), dp(4), dp(10), dp(4))
-            background = card(20, color)
-        })
-        row.addView(TextView(ctx).apply {
-            text = "  " + dangerWord(lvl); setTextColor(color); textSize = 13f
-            setTypeface(typeface, Typeface.BOLD)
-        })
-        return row
+    private fun showTranscript() {
+        val snap = lastSnapshot ?: return
+        if (editingRel) return
+        val views = ArrayList<View>()
+        views.add(line("读到的", "#111827", 14f, true))
+        val lines = transcriptViews(snap, 8)
+        if (lines.isEmpty()) views.add(hint("还没读到消息")) else views.addAll(lines)
+        setContent(views)
+        if (!expanded) toggle()
     }
 
-    private fun replyCard(rank: Int, text: String, pct: Int, onFill: (String) -> Unit): View {
-        val top = rank == 1
+    private fun paintBubble(a: Analysis?) {
+        val b = bubble ?: return
+        val mentioned = lastSnapshot?.mentionedMe == true
+        val ping = !mentioned && prefs.groupDigest && lastSnapshot?.group?.relevantNow == true
+        b.text = if (busy) "…" else PanelCue.bubbleText(mentioned, ping, a, priorAffect)
+        b.textSize = if ((b.text?.length ?: 0) > 2) 11f else 13f
+        b.alpha = if (a == null && !busy) 0.55f else 1f
+        val tone = PanelCue.tone(if (busy && a == null) null else a, priorAffect)
+        val color = when (tone) {
+            PanelCue.Tone.IDLE -> Color.argb(235, 58, 122, 254)
+            PanelCue.Tone.SAFE -> Color.parseColor("#16A34A")
+            PanelCue.Tone.WATCH -> Color.parseColor("#D97706")
+            PanelCue.Tone.HOT -> Color.parseColor("#7C3AED")
+            PanelCue.Tone.DANGER -> Color.parseColor("#DC2626")
+        }
+        b.background = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(color)
+        }
+    }
+
+    private fun replyCard(top: Boolean, text: String, onFill: (String) -> Unit): View {
         val cardBg = if (top) Color.parseColor("#EAF1FF") else Color.parseColor("#F3F4F6")
-        val c = LinearLayout(ctx).apply {
-            orientation = LinearLayout.VERTICAL
+        return TextView(ctx).apply {
+            this.text = text
+            setTextColor(Color.parseColor("#111827"))
+            textSize = 15f
+            setPadding(dp(12), dp(12), dp(12), dp(12))
+            setLineSpacing(dp(2).toFloat(), 1f)
             background = card(12, cardBg)
-            setPadding(dp(10), dp(8), dp(10), dp(8))
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { topMargin = dp(6) }
+            ).apply { topMargin = dp(8) }
+            setOnClickListener { onFill(text) }
+            setOnLongClickListener { copy(text); true }
         }
-        c.addView(TextView(ctx).apply {
-            this.text = "#$rank · ${pct}%"; setTextColor(Color.parseColor("#3A7AFE")); textSize = 11f
-            setTypeface(typeface, Typeface.BOLD)
-        })
-        c.addView(TextView(ctx).apply {
-            this.text = text; setTextColor(Color.parseColor("#111827")); textSize = 14f
-            setPadding(0, dp(3), 0, dp(7)); setLineSpacing(dp(2).toFloat(), 1f)
-        })
-        val btns = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
-        btns.addView(pill("复制", false) { copy(text) })
-        // Fill, then collapse so the input box + keyboard are visible to review/send.
-        btns.addView(pill("填入", true) { onFill(text); if (expanded) toggle() })
-        c.addView(btns)
-        return c
     }
 
     private fun pill(label: String, primary: Boolean, onClick: () -> Unit) = TextView(ctx).apply {
@@ -568,13 +483,6 @@ class OverlayController(private val ctx: Context) {
         return GroupChat.applyAt(text, snap, a?.replyTarget?.choice, a?.bestAction?.choice)
     }
 
-    private fun reAnalyzeBtn() = TextView(ctx).apply {
-        text = "重新分析"; textSize = 13f; gravity = Gravity.CENTER
-        setTextColor(Color.parseColor("#6B7280"))
-        setPadding(dp(10), dp(10), dp(10), dp(4))
-        setOnClickListener { onManualAnalyze?.invoke() }
-    }
-
     private fun transcriptViews(snapshot: ChatSnapshot, max: Int): List<View> {
         val lines = snapshot.messages.takeLast(max)
         if (lines.isEmpty()) return emptyList()
@@ -590,22 +498,6 @@ class OverlayController(private val ctx: Context) {
         }
     }
 
-    private fun markAsMeRow(): View = TextView(ctx).apply {
-        text = "最新这条是我说的"
-        textSize = 12f
-        gravity = Gravity.CENTER
-        setTextColor(Color.parseColor("#059669"))
-        setPadding(dp(8), dp(6), dp(8), dp(4))
-        setOnClickListener { onMarkAsMe?.invoke() }
-    }
-
-    private fun tintBubbleDanger(score: Double) {
-        val color = dangerColor(score.roundToInt())
-        dangerDot?.background = GradientDrawable().apply {
-            shape = GradientDrawable.OVAL; setColor(color); setStroke(dp(2), Color.WHITE)
-        }
-    }
-
     // --------------------------------------------------------------- helpers
 
     private fun line(text: String, color: String, size: Float, bold: Boolean = false) =
@@ -617,46 +509,10 @@ class OverlayController(private val ctx: Context) {
 
     private fun hint(text: String) = line(text, "#9CA3AF", 12f)
 
-    private fun divider() = View(ctx).apply {
-        setBackgroundColor(Color.parseColor("#1F000000"))
-        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)).apply {
-            topMargin = dp(8); bottomMargin = dp(4)
-        }
-    }
-
     private fun copy(text: String) {
         val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
         cm.setPrimaryClip(android.content.ClipData.newPlainText("jev_reply", text))
         toast("已复制")
-    }
-
-    private fun dangerColor(lvl: Int): Int = when {
-        lvl >= 6 -> Color.parseColor("#DC2626")
-        lvl >= 3 -> Color.parseColor("#D97706")
-        else -> Color.parseColor("#16A34A")
-    }
-
-    private fun dangerWord(lvl: Int): String = when {
-        lvl >= 8 -> "很危险"
-        lvl >= 6 -> "偏危险"
-        lvl >= 3 -> "留神"
-        else -> "安全"
-    }
-
-    private fun relationshipRow(): View {
-        val key = chatKey
-        val group = lastSnapshot?.kind == ChatKind.GROUP
-        val custom = key != null && prefs.chatRelationship(key) != null
-        val shown = prefs.relationshipFor(key, group).replace('\n', ' ')
-        val preview = if (shown.length > 26) shown.take(25) + "…" else shown
-        val text = if (custom) "这段关系：$preview" else "这段关系：默认 · $preview"
-        return TextView(ctx).apply {
-            this.text = text
-            textSize = 12f
-            setTextColor(Color.parseColor("#3A7AFE"))
-            setPadding(0, dp(4), 0, dp(2))
-            setOnClickListener { openRelEditor() }
-        }
     }
 
     private fun openRelEditor() {
@@ -666,6 +522,7 @@ class OverlayController(private val ctx: Context) {
             return
         }
         editingRel = true
+        if (!expanded) toggle()
         val group = lastSnapshot?.kind == ChatKind.GROUP
         val edit = EditText(ctx).apply {
             setText(prefs.relationshipFor(key, group))
@@ -711,11 +568,8 @@ class OverlayController(private val ctx: Context) {
         editingRel = false
         setOverlayFocusable(false)
         val a = lastJudgment
-        val snap = lastSnapshot
-        when {
-            a != null -> render(a, generating = false)
-            snap != null -> showIdle(snap)
-        }
+        if (a != null && a.rankedReplies.isNotEmpty()) renderReplyPanel(a)
+        else if (expanded) toggle()
     }
 
     private fun hideIme(v: View) {
